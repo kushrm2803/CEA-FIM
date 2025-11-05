@@ -13,23 +13,11 @@ import time
 from time import strftime, localtime
 import decimal
 from decimal import Decimal
-from fairness_utils import (
-    calculate_beta_for_communities,
-    compute_community_score_with_bridge_bonus,
-    calculate_bridge_aware_pagerank,
-    calculate_group_influence_potential
-)
-
-# Individual = one seed set (e.g., [3, 8, 15, 42, 50])
-# Gene = one node in that seed set
-# Population = collection of several such seed sets (solutions)
 
 def multi_to_set(f, n = None):
     '''
-    Input:  f (function that expects a 0/1 vector)
-    Output: A new function that expects a set of nodes
-    Inside: It converts the set into a 0/1 vector using indicator(S, n) and calls the original f
-    Purpose: A wrapper function to pass 0/1 vector to a function that expects a set
+    Takes as input a function defined on indicator vectors of sets, and returns
+    a version of the function which directly accepts sets
     '''
     if n == None:
         n = len(g)
@@ -38,108 +26,78 @@ def multi_to_set(f, n = None):
     return f_set
 
 def valoracle_to_single(f, i):
-    '''
-    Input:  f (the multi-output function), i (index of desired output)
-    Output: A new function that gives i-th value of f(x,1000)
-    Purpose: To create one oracle per attribute group for fairness-based evaluation
-    '''
     def f_single(x):
-        return f(x, 1000)[i] #1000 is the number of Monte-Carlo simulations for ICM
+        return f(x, 1000)[i]
     return f_single
 
-# Create the first random generation of population
-def pop_init(pop, budget, comm, values, comm_label, nodes_attr, prank, 
-             G, partition, g, ngIndex, attribute, gamma=1.0):
-    """
-    Enhanced population initialization with bridge-node bonus.
-    
-    New parameters:
-        G: NetworkX graph for beta calculation
-        partition: node → community mapping
-        g: original graph
-        ngIndex: node ID to index mapping
-        attribute: attribute name
-        gamma: controls strength of bridge bonus (default 1.0)
-    """
+def pop_init(pop, budget, comm, values, comm_label,nodes_attr,prank):
     P = []
-    
-    # Calculate β for all communities ONCE
-    beta = calculate_beta_for_communities(G, partition, comm, g, ngIndex, 
-                                          attribute, nodes_attr, gamma)
-    
+
     for _ in range(pop):
         P_it1 = []
-        
-        # Initialize attribute control variables
+
         comm_score = {}
         u = {}
         selected_attr = {}
-        
+
         for cal in values:
             u[cal] = 1
             selected_attr[cal] = 0
-        
-        # Compute initial community scores WITH BRIDGE BONUS
+
         for t in range(len(comm)):
-            comm_score[t] = compute_community_score_with_bridge_bonus(
-                comm, comm_label, u, beta, t
-            )
-        
+            sco1 = len(comm[t])
+            sco2 = 0
+
+            for ca in comm_label[t]:
+                sco2 += u[ca]
+
+            comm_score[t] = sco1 * sco2
+
         comm_sel = {}
-        
-        # Select communities probabilistically
+
         for _ in range(budget):
-            a = list(comm_score.keys())
-            b = list(comm_score.values())
-            
+            a = list(comm_score.keys())#comm number
+            b = list(comm_score.values())#score
+
             b_sum = sum(b)
             for deg in range(len(b)):
                 b[deg] /= b_sum
             b = np.array(b)
-            
             tar_comm = np.random.choice(a, size=1, p=b.ravel())[0]
-            
+
             if tar_comm in list(comm_sel.keys()):
                 comm_sel[tar_comm] += 1
             else:
                 comm_sel[tar_comm] = 1
                 for att in comm_label[tar_comm]:
-                    selected_attr[att] += len(set(nodes_attr[att]) & set(comm[tar_comm]))
-                    u[att] = math.exp(-1 * selected_attr[att] / len(nodes_attr[att]))
-            
-            # Recompute community scores with updated u
+                    selected_attr[att] += len(set(nodes_attr[att])&set(comm[tar_comm]))
+                    u[att] = math.exp(-1*selected_attr[att]/len(nodes_attr[att]))
+
             for t in range(len(comm)):
-                comm_score[t] = compute_community_score_with_bridge_bonus(
-                    comm, comm_label, u, beta, t
-                )
-        
-        # Select top nodes within chosen communities
+                sco1 = len(comm[t])
+                sco2 = 0
+
+                for ca in comm_label[t]:
+                    sco2 += u[ca]
+
+                comm_score[t] = sco1 * sco2
+
         for cn in list(comm_sel.keys()):
             pr = {}
             for nod in comm[cn]:
                 pr[nod] = prank[nod]
-            
+
             pr = sorted(pr.items(), key=lambda x: x[1], reverse=True)
             for pr_ind in range(comm_sel[cn]):
                 P_it1.append(pr[pr_ind][0])
-        
+
         P.append(P_it1)
-    
+
     return P
 
-# swaps nodes between paired seed sets, repairs any seed set that lost nodes
-def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, prank,
-              G, g, ngIndex, attribute, gamma=1.0):  # ADD NEW PARAMETERS
-    '''
-    Enhanced crossover with bridge-aware community scoring
-    '''
+def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, prank):
     P = copy.deepcopy(P1)
-    
-    # Calculate beta ONCE for this crossover operation
-    beta = calculate_beta_for_communities(G, partition, comm, g, ngIndex, 
-                                          attribute, nodes_attr, gamma)
 
-    # Pairwise gene swapping
     for i in range(int(len(P)/2)):
         for j in range(len(P[i])):
             if random.random() < cr:
@@ -147,7 +105,6 @@ def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, p
                 P[i][j] = P[len(P)-i-1][j]
                 P[len(P)-i-1][j] = temp
 
-    # repair & fill missing nodes
     for i in range(len(P)):
         P[i] = list(set(P[i]))
         if len(P[i]) == budget:
@@ -170,15 +127,18 @@ def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, p
                 selected_attr[ca] += len(set(nodes_attr[ca]) & set(comm[ac]))
                 u[ca] = math.exp(-1 * selected_attr[ca] / len(nodes_attr[ca]))
 
-        # UPDATED: Use bridge-aware scoring
         for t in range(len(comm)):
-            comm_score[t] = compute_community_score_with_bridge_bonus(
-                comm, comm_label, u, beta, t
-            )
+            sco1 = len(comm[t])
+            sco2 = 0
+
+            for ca in comm_label[t]:
+                sco2 += u[ca]
+
+            comm_score[t] = sco1 * sco2
 
         while len(P[i])<budget:
-            a = list(comm_score.keys())
-            b = list(comm_score.values())
+            a = list(comm_score.keys())  # comm number
+            b = list(comm_score.values())  # score
 
             b_sum = sum(b)
             for deg in range(len(b)):
@@ -211,26 +171,19 @@ def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, p
                     P[i].append(tar_node)
                     break
 
-            # UPDATED: Recompute with bridge-aware scoring
             for t in range(len(comm)):
-                comm_score[t] = compute_community_score_with_bridge_bonus(
-                    comm, comm_label, u, beta, t
-                )
+                sco1 = len(comm[t])
+                sco2 = 0
+
+                for ca in comm_label[t]:
+                    sco2 += u[ca]
+
+                comm_score[t] = sco1 * sco2
 
     return P
 
-
-# mutation randomly changes a few “genes” in individuals so the search doesn’t get stuck in local optima.
-def mutation(P1, mu, comm, values, nodes_attr, prank, partition, comm_label,
-             G, g, ngIndex, attribute, gamma=1.0):  # ADD NEW PARAMETERS
-    '''
-    Enhanced mutation with bridge-aware community scoring
-    '''
+def mutation(P1, mu, comm, values,nodes_attr,prank):
     P = copy.deepcopy(P1)
-    
-    # Calculate beta ONCE for this mutation operation
-    beta = calculate_beta_for_communities(G, partition, comm, g, ngIndex, 
-                                          attribute, nodes_attr, gamma)
 
     for i in range(len(P)):
         for j in range(len(P[i])):
@@ -241,7 +194,7 @@ def mutation(P1, mu, comm, values, nodes_attr, prank, partition, comm_label,
                 for cal in values:
                     u[cal] = 1
                     selected_attr[cal] = 0
-                
+
                 all_comm = []
                 for node in P[i]:
                     all_comm.append(partition[node])
@@ -253,20 +206,24 @@ def mutation(P1, mu, comm, values, nodes_attr, prank, partition, comm_label,
                         selected_attr[ca] += len(set(nodes_attr[ca]) & set(comm[ac]))
                         u[ca] = math.exp(-1 * selected_attr[ca] / len(nodes_attr[ca]))
 
-                # UPDATED: Use bridge-aware scoring
                 for t in range(len(comm)):
-                    comm_score[t] = compute_community_score_with_bridge_bonus(
-                        comm, comm_label, u, beta, t
-                    )
+                    sco1 = len(comm[t])
+                    sco2 = 0
 
-                a = list(comm_score.keys())
-                b = list(comm_score.values())
+                    for ca in comm_label[t]:
+                        sco2 += u[ca]
+
+                    comm_score[t] = sco1 * sco2
+
+                a = list(comm_score.keys())  # comm number
+                b = list(comm_score.values())  # score
 
                 b_sum = sum(b)
                 for deg in range(len(b)):
                     b[deg] /= b_sum
                 b = np.array(b)
                 tar_comm = np.random.choice(a, size=1, p=b.ravel())[0]
+
 
                 pr = {}
                 for nod in comm[tar_comm]:
@@ -289,36 +246,24 @@ def mutation(P1, mu, comm, values, nodes_attr, prank, partition, comm_label,
     return P
 
 
-
-'''
-The optimal solution for each group is estimated by running the greedy algorithm separately on each group's subgraph. This gives the highest possible influence spread for that group if you only tried to maximize coverage within it.
-
-
-'''
-
-
-succession = True #algorithm will run a separate greedy optimization inside each subgroup (like each region) before running the global algorithm.
+succession = True
 solver = 'md'
 
-group_size = {} # store the size of each attribute group
-# Example: group_size['twitter']['color'] =
-# [[100, 150],   # Run 1: 100 nodes are 'red', 150 nodes are 'blue'
-#  [98, 152],    # Run 2: 98 nodes are 'red', 152 nodes are 'blue'
-#  [101, 149]]   # Run 3: 101 nodes are 'red', 149 nodes are 'blue'
-num_runs = 10 # Number of independent runs per experiment for averaging results.
-algorithms = ['Greedy', 'GR', 'MaxMin-Size'] # Algorithms to compare: Greedy, Genetic Algorithm (GR), MaxMin-Size (MMS)
+group_size = {}
+num_runs = 10
+algorithms = ['Greedy', 'GR', 'MaxMin-Size']
 
-graphnames = ['rice_subset'] # List of graphs (network files) to run experiments on.
-attributes = ['color'] # List of node attributes (demographic categories) to ensure fairness across.
-# graphnames = ['rice_subset']
-# attributes = ['color']
+# graphnames = ['graph_spa_500_0']
+# attributes = ['region', 'ethnicity', 'age', 'gender', 'status']
+graphnames = ['twitter']
+attributes = ['color']
 
 for graphname in graphnames:
     print(graphname)
-    for budget in [1000]: # The number of seed nodes to choose for influence maximization
+    for budget in [40]:
         g = pickle.load(open('networks/{}.pickle'.format(graphname), 'rb'))
-        ng = list(g.nodes()) # list of node IDs in the graph Example → [100, 102, 105, ...]
-        ngIndex = {} # mapping from node ID to its index in ng Example → {100:0, 102:1, 105:2, ...}
+        ng = list(g.nodes())
+        ngIndex = {}
         for ni in range(len(ng)):
             ngIndex[ng[ni]] = ni
 
@@ -331,45 +276,39 @@ for graphname in graphnames:
 
         group_size[graphname] = {}
 
-        # Counts how many unique attribute values exist.
         for attribute in attributes:
             # assign a unique numeric value for nodes who left the attribute blank
             nvalues = len(np.unique([g.nodes[v][attribute] for v in g.nodes()]))
             group_size[graphname][attribute] = np.zeros((num_runs, nvalues))
 
-        # To record performance metrics
-        fair_vals_attr = np.zeros((num_runs, len(attributes))) # average fairness violation for EA.
-        greedy_vals_attr = np.zeros((num_runs, len(attributes))) # average fairness violation for greedy.
-        pof = np.zeros((num_runs, len(attributes))) # Price of Fairness (ratio of greedy vs fair influence).
+        fair_vals_attr = np.zeros((num_runs, len(attributes)))
+        greedy_vals_attr = np.zeros((num_runs, len(attributes)))
+        pof = np.zeros((num_runs, len(attributes)))
 
         include_total = False
 
         for attr_idx, attribute in enumerate(attributes):
 
-            # Precomputes 1000 random “live” subgraphs used for Monte Carlo influence simulation.
             live_graphs = sample_live_icm(g, 1000)
 
             group_indicator = np.ones((len(g.nodes()), 1))
 
             val_oracle = make_multilinear_objective_samples_group(live_graphs, group_indicator, list(g.nodes()),
-                                                                  list(g.nodes()), np.ones(len(g))) # objective function for overall influence
-            # f_multi(x) returns total influence spread by seed set x
+                                                                  list(g.nodes()), np.ones(len(g)))
+
             def f_multi(x):
                 return val_oracle(x, 1000).sum()
 
             f_set = multi_to_set(f_multi)
 
-            violation_0 = [] # How much EA solution fails to meet fairness constraints
-            violation_1 = [] # How much greedy solution fails to meet fairness constraints
-            min_fraction_0 = [] # minimum fraction of coverage per group by EA solution
-            min_fraction_1 = [] # minimum fraction of coverage per group by greedy solution
-            pof_0 = [] # Ratio of total influence by greedy to total influence by EA.
-            time_0 = [] # Runtime (in seconds) for the EA in each run.
-            time_1 = [] # Runtime (in seconds) for the greedy in each run.
+            violation_0 = []
+            violation_1 = []
+            min_fraction_0 = []
+            min_fraction_1 = []
+            pof_0 = []
+            time_0 = []
+            time_1 = []
 
-            # alpha is the tradeoff weight in fitness:
-            # High α → prioritize coverage
-            # Low α → prioritize fairness
             alpha = 0.5  # a*MF+(1-a)*DCV
             print('aplha ', alpha)
 
@@ -377,7 +316,7 @@ for graphname in graphnames:
                 print(strftime("%Y-%m-%d %H:%M:%S", localtime()))
                 # find overall optimal solution
                 start_time1 = time.perf_counter()
-                S, obj = greedy(list(range(len(g))), budget, f_set) # Greedy influence maximization S: selected nodes, obj: achieved influence value
+                S, obj = greedy(list(range(len(g))), budget, f_set)
                 end_time1 = time.perf_counter()
                 runningtime1 = end_time1 - start_time1
 
@@ -385,14 +324,12 @@ for graphname in graphnames:
                 # all values taken by this attribute
                 values = np.unique([g.nodes[v][attribute] for v in g.nodes()])
 
-                # Maps each attribute value to list of node IDs having that attribute. Example → {'North': [0,1,2], 'South':[3,4], 'West':[5,6,7]}
                 nodes_attr = {}  # value-node
 
                 for vidx, val in enumerate(values):
                     nodes_attr[val] = [v for v in g.nodes() if g.nodes[v][attribute] == val]
                     group_size[graphname][attribute][run, vidx] = len(nodes_attr[val])
 
-                # For each group (e.g., region), builds a subgraph, samples influence spread, and finds the optimal seed set within that group using greedy.
                 opt_succession = {}
                 if succession:
                     for vidx, val in enumerate(values):
@@ -417,14 +354,12 @@ for graphname in graphnames:
                     for val_idx, val in enumerate(values):
                         group_indicator[nodes_attr[val], val_idx] = 1
 
-                # Creates a multi-output oracle giving influence spread for each attribute group separately.
                 val_oracle = make_multilinear_objective_samples_group(live_graphs, group_indicator, list(g.nodes()),
                                                                       list(g.nodes()), np.ones(len(g)))
 
                 # build an objective function for each subgroup
                 f_attr = {}
                 f_multi_attr = {}
-                # Build Per-Group Influence Functions
                 for vidx, val in enumerate(values):
                     nodes_attr[val] = [v for v in g.nodes() if g.nodes[v][attribute] == val]
                     f_multi_attr[val] = valoracle_to_single(val_oracle, vidx)
@@ -441,20 +376,17 @@ for graphname in graphnames:
                     opt_attr = opt_succession
                 all_opt = np.array([opt_attr[val] for val in values])
 
-                # Evaluation Fitness Function
+
                 def Eval(SS):
-                    # Convert Seed Set to Indices
                     S = [ngIndex[int(i)] for i in SS]
                     fitness = 0
-                    # Create a 0/1 vector for the selected seed set
                     x = np.zeros(len(g.nodes))
                     x[list(S)] = 1
 
-                    vals = val_oracle(x, 1000) # influence spread per attribute group
-                    coverage_min = (vals / group_size[graphname][attribute][run]).min() # Finds the least-covered group
-                    violation = np.clip(all_opt - vals, 0, np.inf) / all_opt # Measures how much each group falls short of its optimal possible influence.
+                    vals = val_oracle(x, 1000)
+                    coverage_min = (vals / group_size[graphname][attribute][run]).min()
+                    violation = np.clip(all_opt - vals, 0, np.inf) / all_opt
 
-                    # Combine Coverage and Fairness into Fitness
                     fitness += alpha * coverage_min
                     fitness -= (1-alpha) * violation.sum() / len(values)
 
@@ -462,70 +394,40 @@ for graphname in graphnames:
 
 
                 # EA-start
-                pop = 10 # population size
-                mu = 0.1 # mutation rate
-                cr = 0.6 # crossover rate
-                maxgen = 150 # 150 iterations
+                pop = 10
+                mu = 0.1
+                cr = 0.6
+                maxgen = 150
 
                 address = 'networks/{}.txt'.format(graphname)
                 G = nx.read_edgelist(address, create_using=nx.Graph())
 
-                partition = community_louvain.best_partition(G) # Uses Louvain algorithm to detect communities.
-                
-                # Build Community Data
-                comm_all_label = list(set(partition.values()))
+                partition = community_louvain.best_partition(G)
+                comm_all_label = list(set(partition.values()))#社团标签，非节点
                 comm = []
                 for _ in range(len(comm_all_label)):
                     comm.append([])
                 for key in list(partition.keys()):
                     comm[partition[key]].append(key)
 
-                # Map Each Community’s Attribute Composition
-                comm_label = []
+                comm_label = []#每个社团含有的节点属性
                 for c in comm:
                     temp = set()
                     for cc in c:
                         temp.add(g.nodes[ngIndex[int(cc)]][attribute])
                     comm_label.append(list(temp))
 
-                # --- Start of Fairness-Biased Personalized PageRank Calculation ---
-                # 1. Get the size of each attribute group from the 'nodes_attr' dictionary.
-                group_sizes = {val: len(nodes) for val, nodes in nodes_attr.items()}
+                pr = nx.pagerank(G)
 
-                # 2. Create the un-normalized personalization vector.
-                # Each node's weight is the inverse of its group's size
-                # --- End of Fairness-Biased Personalized PageRank Calculation ---
+                P = pop_init(pop, budget, comm, values,comm_label,nodes_attr,pr)
 
-
-                print("Calculating group influence potentials...")
-                group_influence = calculate_group_influence_potential(
-                    g, nodes_attr, live_graphs, val_oracle, values
-                )
-
-                # Calculate enhanced PageRank with all improvements
-                pr = calculate_bridge_aware_pagerank(
-                    G, g, ngIndex, attribute, nodes_attr, values, 
-                    partition, comm, 
-                    u={val: 1.0 for val in values},  # Initial u values
-                    selected_attr=None,  # No selection history yet
-                    group_influence=group_influence,
-                    alpha_size=1.0,        # Weight for size-based fairness
-                    alpha_influence=0.5,   # Weight for structural fairness
-                    alpha_deficit=0.3,     # Weight for temporal fairness
-                    alpha_bridge=0.2,      # Weight for bridge node bonus
-                    damping=0.85
-                )
-                # Initialize Population
-                P = pop_init(pop, budget, comm, values, comm_label, nodes_attr, pr, G, partition, g, ngIndex, attribute, gamma=1.0)
                 i = 0
                 while i < maxgen:
-                    P = sorted(P, key=lambda x: Eval(x), reverse=True) # sort by fitness
+                    P = sorted(P, key=lambda x: Eval(x), reverse=True)
 
-                    ##### BUG : Crossover never actually used #####
-                    P_cr = crossover(P, cr, budget, partition, comm_label, comm, values, nodes_attr, pr,G, g, ngIndex, attribute, gamma=1.0)
-                    P_mu = mutation(P, mu, comm, values ,nodes_attr, pr, partition, comm_label,G, g, ngIndex, attribute, gamma=1.0)
+                    P_cr = crossover(P, cr, budget, partition, comm_label, comm, values, nodes_attr, pr)
+                    P_mu = mutation(P, mu, comm, values,nodes_attr,pr)
 
-                    # Evaluate children and replace parents if better
                     for index in range(pop):
                         inf1 = Eval(P_mu[index])
                         inf2 = Eval(P[index])
@@ -534,7 +436,6 @@ for graphname in graphnames:
                             P[index] = P_mu[index]
                     i += 1
 
-                # Takes the best individual from the final generation.
                 SS = sorted(P, key=lambda x: Eval(x), reverse=True)[0]
                 SI = [ngIndex[int(si)] for si in SS]
 
@@ -566,7 +467,6 @@ for graphname in graphnames:
 
                 pof[run, attr_idx] = greedy_vals.sum() / all_fair_vals.sum()
 
-                # Storing in order for averaging accross runs
                 violation_0.append(fair_violation.sum() / len(values))
                 violation_1.append(greedy_violation.sum() / len(values))
                 min_fraction_0.append(fair_min)
@@ -577,7 +477,7 @@ for graphname in graphnames:
 
             print("graph:", graphname, "K:", budget, "attribute", attribute)
             print("F:", Decimal(np.mean(min_fraction_0) - np.mean(violation_0)).quantize(Decimal("0.00"),
-                                                                                        rounding=decimal.ROUND_HALF_UP))
+                                                                                   rounding=decimal.ROUND_HALF_UP))
 
             print("violation_EA:",
                   Decimal(np.mean(violation_0)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP),
