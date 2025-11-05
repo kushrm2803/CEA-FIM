@@ -308,14 +308,14 @@ group_size = {} # store the size of each attribute group
 num_runs = 10 # Number of independent runs per experiment for averaging results.
 algorithms = ['Greedy', 'GR', 'MaxMin-Size'] # Algorithms to compare: Greedy, Genetic Algorithm (GR), MaxMin-Size (MMS)
 
-graphnames = ['twitter'] # List of graphs (network files) to run experiments on.
+graphnames = ['rice_subset'] # List of graphs (network files) to run experiments on.
 attributes = ['color'] # List of node attributes (demographic categories) to ensure fairness across.
 # graphnames = ['rice_subset']
 # attributes = ['color']
 
 for graphname in graphnames:
     print(graphname)
-    for budget in [40]: # The number of seed nodes to choose for influence maximization
+    for budget in [1000]: # The number of seed nodes to choose for influence maximization
         g = pickle.load(open('networks/{}.pickle'.format(graphname), 'rb'))
         ng = list(g.nodes()) # list of node IDs in the graph Example → [100, 102, 105, ...]
         ngIndex = {} # mapping from node ID to its index in ng Example → {100:0, 102:1, 105:2, ...}
