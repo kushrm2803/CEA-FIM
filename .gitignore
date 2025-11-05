@@ -26,6 +26,12 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+raw_data/soc-pokec-profiles.txt.gz
+raw_data/soc-pokec-relationships.txt.gz
+
+networks/soc-pokec.pickle
+networks/soc-pokec.txt
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.

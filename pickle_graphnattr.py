@@ -2,7 +2,7 @@ import pickle
 import networkx as nx
 
 # Change this to your dataset file
-file_path = "./networks/graph_spa_500_0.pickle"
+file_path = "./networks/soc-pokec.pickle"
 
 with open(file_path, "rb") as f:
     G = pickle.load(f)
@@ -26,9 +26,9 @@ if G.is_directed() and G.number_of_nodes() > 0:
     print(f"Average out-degree: {avg_out_degree:.4f}")
 
 # Print attributes for the first node
-first_node = list(G.nodes())[0]
-print(f"\nAttributes for first node ({first_node}):")
-print(G.nodes[first_node])
+# first_node = list(G.nodes())[0]
+# print(f"\nAttributes for first node ({first_node}):")
+# print(G.nodes[first_node])
 
 # Print all unique attribute keys
 all_attrs = set()

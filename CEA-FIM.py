@@ -308,7 +308,7 @@ group_size = {} # store the size of each attribute group
 num_runs = 10 # Number of independent runs per experiment for averaging results.
 algorithms = ['Greedy', 'GR', 'MaxMin-Size'] # Algorithms to compare: Greedy, Genetic Algorithm (GR), MaxMin-Size (MMS)
 
-graphnames = ['rice_subset'] # List of graphs (network files) to run experiments on.
+graphnames = ['twitter'] # List of graphs (network files) to run experiments on.
 attributes = ['color'] # List of node attributes (demographic categories) to ensure fairness across.
 # graphnames = ['rice_subset']
 # attributes = ['color']
