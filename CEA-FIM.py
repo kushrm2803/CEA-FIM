@@ -14,10 +14,17 @@ from time import strftime, localtime
 import decimal
 from decimal import Decimal
 
+
+# Individual = one seed set (e.g., [3, 8, 15, 42, 50])
+# Gene = one node in that seed set
+# Population = collection of several such seed sets (solutions)
+
 def multi_to_set(f, n = None):
     '''
-    Takes as input a function defined on indicator vectors of sets, and returns
-    a version of the function which directly accepts sets
+    Input:	f (function that expects a 0/1 vector)
+    Output:	A new function that expects a set of nodes
+    Inside:	It converts the set into a 0/1 vector using indicator(S, n) and calls the original f
+    Purpose: A wrapper function to pass 0/1 vector to a function that expects a set
     '''
     if n == None:
         n = len(g)
@@ -26,53 +33,97 @@ def multi_to_set(f, n = None):
     return f_set
 
 def valoracle_to_single(f, i):
+    '''
+    Input:	f (the multi-output function), i (index of desired output)
+    Output:	A new function that gives i-th value of f(x,1000)
+    Purpose: To create one oracle per attribute group for fairness-based evaluation
+    '''
     def f_single(x):
-        return f(x, 1000)[i]
+        return f(x, 1000)[i] #1000 is the number of Monte-Carlo simulations for ICM
     return f_single
 
+# Create the first random generation of population
 def pop_init(pop, budget, comm, values, comm_label,nodes_attr,prank):
+    '''
+    pop:	Number of individuals in population (e.g. 30)
+    budget:	How many seed nodes per individual (e.g. 5 or 10)
+    comm:	List of communities, where each comm[t] = list of node IDs in that community
+    (example : comm = [
+        [0, 1],       # community 0: nodes 0 and 1
+        [2, 3],       # community 1: nodes 2 and 3
+        [4, 5, 6]     # community 2: nodes 4,5,6
+    ])
+    values:	List of possible attribute values (e.g. If attribute = gender, then {male, female})
+    comm_label:	For each community t, set of which attributes appear there 
+    ( example : comm_label = [
+        ['Male', 'Female'],
+        ['Male'],
+        ['Female', 'Male']
+    ])
+    nodes_attr:	For each attribute value, which nodes have that value
+    (example : nodes_attr = {
+        'Male':   [0, 2, 3, 6],
+        'Female': [1, 4, 5]
+    })
+    prank:	PageRank score per node (importance score from the graph)
+    '''
     P = []
 
     for _ in range(pop):
-        P_it1 = []
+        P_it1 = [] # list of candidate seed nodes
 
-        comm_score = {}
-        u = {}
-        selected_attr = {}
+        # Initialize attribute control variables
+        
+        comm_score = {} # The score of each community (used to select communities)
+        u = {} # A weight controlling how “desirable” each attribute value currently is (used to balance attributes)
+        selected_attr = {} # How many nodes of each attribute have been selected so far
 
+        # All attribute values are equally important at the start.
         for cal in values:
             u[cal] = 1
             selected_attr[cal] = 0
 
+        # Compute initial community scores
         for t in range(len(comm)):
-            sco1 = len(comm[t])
+            sco1 = len(comm[t]) # size of community
             sco2 = 0
 
-            for ca in comm_label[t]:
+            for ca in comm_label[t]: # which attributes appear in this community
                 sco2 += u[ca]
 
+            # Bigger communities → higher sco1
+            # Communities that contain more attributes → higher sco2
             comm_score[t] = sco1 * sco2
 
         comm_sel = {}
 
+        # Select communities probabilistically
         for _ in range(budget):
-            a = list(comm_score.keys())#comm number
-            b = list(comm_score.values())#score
+            a = list(comm_score.keys()) # community id
+            b = list(comm_score.values())   #score
 
+            # normalize b (convert scores into probabilities)
             b_sum = sum(b)
             for deg in range(len(b)):
                 b[deg] /= b_sum
             b = np.array(b)
+            # choose one community at random such that communities with higher score → higher chance to be picked.
             tar_comm = np.random.choice(a, size=1, p=b.ravel())[0]
 
+            # Record how many nodes to pick from each community
             if tar_comm in list(comm_sel.keys()):
                 comm_sel[tar_comm] += 1
             else:
                 comm_sel[tar_comm] = 1
+                # Weight of an attribute is only decreased for first time
                 for att in comm_label[tar_comm]:
-                    selected_attr[att] += len(set(nodes_attr[att])&set(comm[tar_comm]))
-                    u[att] = math.exp(-1*selected_attr[att]/len(nodes_attr[att]))
+                    selected_attr[att] += len(set(nodes_attr[att])&set(comm[tar_comm])) # counts how many nodes of that attribute exist in this community.
+                    # If we already picked many nodes with attribute att,
+                    # u[att] becomes smaller (because exp(-x) decreases).
+                    # So next time, we’ll prefer other attributes — ensuring attribute balance.
+                    u[att] = math.exp(-1*selected_attr[att]/len(nodes_attr[att])) 
 
+            # Recompute community scores
             for t in range(len(comm)):
                 sco1 = len(comm[t])
                 sco2 = 0
@@ -81,13 +132,16 @@ def pop_init(pop, budget, comm, values, comm_label,nodes_attr,prank):
                     sco2 += u[ca]
 
                 comm_score[t] = sco1 * sco2
-
+                
+        # Select top nodes within chosen communities
         for cn in list(comm_sel.keys()):
             pr = {}
+            # For each selected community, we get PageRank scores of its nodes.
             for nod in comm[cn]:
                 pr[nod] = prank[nod]
 
             pr = sorted(pr.items(), key=lambda x: x[1], reverse=True)
+            # Pick number of nodes equal to comm_sel of the community
             for pr_ind in range(comm_sel[cn]):
                 P_it1.append(pr[pr_ind][0])
 
@@ -95,21 +149,43 @@ def pop_init(pop, budget, comm, values, comm_label,nodes_attr,prank):
 
     return P
 
+# swaps nodes between paired seed sets, repairs any seed set that lost nodes
 def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, prank):
+    '''
+    P1 — list of seed sets; each seed set is a list of node IDs.
+    Example: P1 = [[1,2,3], [4,5,6], [7,8,9], [10,11,12]]
+    cr — crossover probability per nodes.
+    budget — desired number of nodes per individual.
+    partition — dict: node_id → community_id.
+    comm — list of communities, each a list of node IDs.
+    Example: comm = [[1,2], [3,4], [5,6,7]]
+    comm_label — for each community id, list of attribute values present there (unique values).
+    Example: comm_label = [['M'], ['F'], ['M','F']]
+    values — list of attribute values (categories).
+    Example: values = ['M','F']
+    nodes_attr — dict: attr_value → list of node IDs with that value.
+    Example: nodes_attr = {'M':[1,3,5], 'F':[2,4,6]}
+    prank — dict: node_id → pagerank score (float).
+    '''
     P = copy.deepcopy(P1)
 
+    # Pairwise gene swapping
+    # Pair i with len(P)-i-1 and so on
     for i in range(int(len(P)/2)):
         for j in range(len(P[i])):
+            # Swap jth gene of both individuals
             if random.random() < cr:
                 temp = P[i][j]
                 P[i][j] = P[len(P)-i-1][j]
                 P[len(P)-i-1][j] = temp
 
+    # repair & fill missing nodes to remove duplicates or fill fewer than budget
     for i in range(len(P)):
-        P[i] = list(set(P[i]))
+        P[i] = list(set(P[i])) # removes duplicates
         if len(P[i]) == budget:
             continue
 
+        # Prepare community scores
         comm_score = {}
         u = {}
         selected_attr = {}
@@ -117,16 +193,19 @@ def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, p
             u[cal] = 1
             selected_attr[cal] = 0
 
+        # Find which communities are already present in the individual
         all_comm = []
         for node in P[i]:
             all_comm.append(partition[node])
         all_comm = list(set(all_comm))
 
+        # Update selected_attr and u based on communities already present
         for ac in all_comm:
             for ca in comm_label[ac]:
                 selected_attr[ca] += len(set(nodes_attr[ca]) & set(comm[ac]))
                 u[ca] = math.exp(-1 * selected_attr[ca] / len(nodes_attr[ca]))
 
+        # Compute current community scores
         for t in range(len(comm)):
             sco1 = len(comm[t])
             sco2 = 0
@@ -136,15 +215,19 @@ def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, p
 
             comm_score[t] = sco1 * sco2
 
+        # Fill until budget reached
         while len(P[i])<budget:
-            a = list(comm_score.keys())  # comm number
+            a = list(comm_score.keys())  # comm id
             b = list(comm_score.values())  # score
 
+            # normalize b to probabilities
             b_sum = sum(b)
             for deg in range(len(b)):
                 b[deg] /= b_sum
             b = np.array(b)
             tar_comm = np.random.choice(a, size=1, p=b.ravel())[0]
+
+            ###### BUG: The refill step doesn’t preserve community/attribute balance — it fills nodes randomly, so underrepresented communities may get ignored. Need to check this ######
 
             if tar_comm not in all_comm:
                 all_comm.append(tar_comm)
@@ -153,6 +236,7 @@ def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, p
                     selected_attr[ca] += len(set(nodes_attr[ca]) & set(comm[tar_comm]))
                     u[ca] = math.exp(-1 * selected_attr[ca] / len(nodes_attr[ca]))
 
+            # Build a PageRank probability distribution
             pr = {}
             for nod in comm[tar_comm]:
                 pr[nod] = prank[nod]
@@ -160,17 +244,20 @@ def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, p
             aa = list(pr.keys())
             bb = list(pr.values())
 
+            # Normalize PageRank scores to probabilities.
             bb_sum = sum(bb)
             for deg in range(len(bb)):
                 bb[deg] /= bb_sum
             bb = np.array(bb)
 
+            # Pick one node from the chosen community, biased by PageRank scores.
             while True:
                 tar_node = np.random.choice(aa, size=1, p=bb.ravel())[0]
                 if tar_node not in P[i]:
                     P[i].append(tar_node)
                     break
 
+            # Update community scores after adding a new node
             for t in range(len(comm)):
                 sco1 = len(comm[t])
                 sco2 = 0
@@ -182,30 +269,62 @@ def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, p
 
     return P
 
+# mutation randomly changes a few “genes” in individuals so the search doesn’t get stuck in local optima.
 def mutation(P1, mu, comm, values,nodes_attr,prank):
+    '''
+    P1:	    Current population — list of individuals (each individual = list of node IDs)
+    Example: P1 = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+    mu:	    Mutation probability — chance of replacing a node
+    comm:	List of communities, where each comm[t] = list of node IDs in that community
+            Example: comm = [
+                [0, 1],       # community 0
+                [2, 3],       # community 1
+                [4, 5, 6]     # community 2
+            ]
+    values:	List of possible attribute values (e.g. demographic categories)
+            Example: values = ['Male', 'Female']
+    nodes_attr:	For each attribute value, which nodes have that attribute
+            Example: nodes_attr = {
+                'Male':   [0, 2, 3, 6],
+                'Female': [1, 4, 5]
+            }
+    prank:	PageRank score per node (importance score from the network)
+    partition: Dictionary mapping each node ID → its community ID
+    comm_label: For each community t, list of attribute values present in that community
+            Example: comm_label = [
+                ['Male', 'Female'],
+                ['Male'],
+                ['Female']
+            ]
+    '''
     P = copy.deepcopy(P1)
 
+    # For each node within a seedset if the rolled random number is less than mutation probability mu, replace that node
     for i in range(len(P)):
         for j in range(len(P[i])):
             if random.random() < mu:
+                # Initialize attribute control variables
                 comm_score = {}
                 u = {}
                 selected_attr = {}
                 for cal in values:
                     u[cal] = 1
                     selected_attr[cal] = 0
-
+                
+                # Find which communities are already present in the individual
                 all_comm = []
                 for node in P[i]:
                     all_comm.append(partition[node])
-                all_comm.remove(partition[P[i][j]])
+                all_comm.remove(partition[P[i][j]]) # removes the community of the node being replaced
                 all_comm = list(set(all_comm))
 
+                # Update attribute coverage scores
                 for ac in all_comm:
                     for ca in comm_label[ac]:
                         selected_attr[ca] += len(set(nodes_attr[ca]) & set(comm[ac]))
                         u[ca] = math.exp(-1 * selected_attr[ca] / len(nodes_attr[ca]))
 
+                # Compute community scores
                 for t in range(len(comm)):
                     sco1 = len(comm[t])
                     sco2 = 0
@@ -215,16 +334,17 @@ def mutation(P1, mu, comm, values,nodes_attr,prank):
 
                     comm_score[t] = sco1 * sco2
 
-                a = list(comm_score.keys())  # comm number
+                a = list(comm_score.keys())  # comm id
                 b = list(comm_score.values())  # score
 
                 b_sum = sum(b)
                 for deg in range(len(b)):
                     b[deg] /= b_sum
                 b = np.array(b)
+                # Randomly pick a community to mutate into — biased by community scores
                 tar_comm = np.random.choice(a, size=1, p=b.ravel())[0]
 
-
+                # Inside the chosen community, nodes are weighted by their PageRank scores.
                 pr = {}
                 for nod in comm[tar_comm]:
                     pr[nod] = prank[nod]
@@ -237,6 +357,7 @@ def mutation(P1, mu, comm, values,nodes_attr,prank):
                     bb[deg] /= bb_sum
                 bb = np.array(bb)
 
+                # Randomly select one node from the target community based on PageRank weights.
                 while True:
                     tar_node = np.random.choice(aa, size=1, p=bb.ravel())[0]
                     if tar_node not in P[i]:
@@ -246,24 +367,35 @@ def mutation(P1, mu, comm, values,nodes_attr,prank):
     return P
 
 
-succession = True
+'''
+The optimal solution for each group is estimated by running the greedy algorithm separately on each group's subgraph. This gives the highest possible influence spread for that group if you only tried to maximize coverage within it.
+
+
+'''
+
+
+succession = True #algorithm will run a separate greedy optimization inside each subgroup (like each region) before running the global algorithm.
 solver = 'md'
 
-group_size = {}
-num_runs = 10
-algorithms = ['Greedy', 'GR', 'MaxMin-Size']
+group_size = {} # store the size of each attribute group
+# Example: group_size['twitter']['color'] =
+# [[100, 150],   # Run 1: 100 nodes are 'red', 150 nodes are 'blue'
+#  [98, 152],    # Run 2: 98 nodes are 'red', 152 nodes are 'blue'
+#  [101, 149]]   # Run 3: 101 nodes are 'red', 149 nodes are 'blue'
+num_runs = 10 # Number of independent runs per experiment for averaging results.
+algorithms = ['Greedy', 'GR', 'MaxMin-Size'] # Algorithms to compare: Greedy, Genetic Algorithm (GR), MaxMin-Size (MMS)
 
-# graphnames = ['graph_spa_500_0']
-# attributes = ['region', 'ethnicity', 'age', 'gender', 'status']
-graphnames = ['twitter']
-attributes = ['color']
+graphnames = ['graph_spa_500_0'] # List of graphs (network files) to run experiments on.
+attributes = ['region'] # List of node attributes (demographic categories) to ensure fairness across.
+# graphnames = ['rice_subset']
+# attributes = ['color']
 
 for graphname in graphnames:
     print(graphname)
-    for budget in [40]:
+    for budget in [40]: # The number of seed nodes to choose for influence maximization
         g = pickle.load(open('networks/{}.pickle'.format(graphname), 'rb'))
-        ng = list(g.nodes())
-        ngIndex = {}
+        ng = list(g.nodes()) # list of node IDs in the graph Example → [100, 102, 105, ...]
+        ngIndex = {} # mapping from node ID to its index in ng Example → {100:0, 102:1, 105:2, ...}
         for ni in range(len(ng)):
             ngIndex[ng[ni]] = ni
 
@@ -276,39 +408,45 @@ for graphname in graphnames:
 
         group_size[graphname] = {}
 
+        # Counts how many unique attribute values exist.
         for attribute in attributes:
             # assign a unique numeric value for nodes who left the attribute blank
             nvalues = len(np.unique([g.nodes[v][attribute] for v in g.nodes()]))
             group_size[graphname][attribute] = np.zeros((num_runs, nvalues))
 
-        fair_vals_attr = np.zeros((num_runs, len(attributes)))
-        greedy_vals_attr = np.zeros((num_runs, len(attributes)))
-        pof = np.zeros((num_runs, len(attributes)))
+        # To record performance metrics
+        fair_vals_attr = np.zeros((num_runs, len(attributes))) # average fairness violation for EA.
+        greedy_vals_attr = np.zeros((num_runs, len(attributes))) # average fairness violation for greedy.
+        pof = np.zeros((num_runs, len(attributes))) # Price of Fairness (ratio of greedy vs fair influence).
 
         include_total = False
 
         for attr_idx, attribute in enumerate(attributes):
 
+            # Precomputes 1000 random “live” subgraphs used for Monte Carlo influence simulation.
             live_graphs = sample_live_icm(g, 1000)
 
             group_indicator = np.ones((len(g.nodes()), 1))
 
             val_oracle = make_multilinear_objective_samples_group(live_graphs, group_indicator, list(g.nodes()),
-                                                                  list(g.nodes()), np.ones(len(g)))
-
+                                                                  list(g.nodes()), np.ones(len(g))) # objective function for overall influence
+            # f_multi(x) returns total influence spread by seed set x
             def f_multi(x):
                 return val_oracle(x, 1000).sum()
 
             f_set = multi_to_set(f_multi)
 
-            violation_0 = []
-            violation_1 = []
-            min_fraction_0 = []
-            min_fraction_1 = []
-            pof_0 = []
-            time_0 = []
-            time_1 = []
+            violation_0 = [] # How much EA solution fails to meet fairness constraints
+            violation_1 = [] # How much greedy solution fails to meet fairness constraints
+            min_fraction_0 = [] # minimum fraction of coverage per group by EA solution
+            min_fraction_1 = [] # minimum fraction of coverage per group by greedy solution
+            pof_0 = [] # Ratio of total influence by greedy to total influence by EA.
+            time_0 = [] # Runtime (in seconds) for the EA in each run.
+            time_1 = [] # Runtime (in seconds) for the greedy in each run.
 
+            # alpha is the tradeoff weight in fitness:
+            # High α → prioritize coverage
+            # Low α → prioritize fairness
             alpha = 0.5  # a*MF+(1-a)*DCV
             print('aplha ', alpha)
 
@@ -316,7 +454,7 @@ for graphname in graphnames:
                 print(strftime("%Y-%m-%d %H:%M:%S", localtime()))
                 # find overall optimal solution
                 start_time1 = time.perf_counter()
-                S, obj = greedy(list(range(len(g))), budget, f_set)
+                S, obj = greedy(list(range(len(g))), budget, f_set) # Greedy influence maximization S: selected nodes, obj: achieved influence value
                 end_time1 = time.perf_counter()
                 runningtime1 = end_time1 - start_time1
 
@@ -324,12 +462,14 @@ for graphname in graphnames:
                 # all values taken by this attribute
                 values = np.unique([g.nodes[v][attribute] for v in g.nodes()])
 
+                # Maps each attribute value to list of node IDs having that attribute. Example → {'North': [0,1,2], 'South':[3,4], 'West':[5,6,7]}
                 nodes_attr = {}  # value-node
 
                 for vidx, val in enumerate(values):
                     nodes_attr[val] = [v for v in g.nodes() if g.nodes[v][attribute] == val]
                     group_size[graphname][attribute][run, vidx] = len(nodes_attr[val])
 
+                # For each group (e.g., region), builds a subgraph, samples influence spread, and finds the optimal seed set within that group using greedy.
                 opt_succession = {}
                 if succession:
                     for vidx, val in enumerate(values):
@@ -354,12 +494,14 @@ for graphname in graphnames:
                     for val_idx, val in enumerate(values):
                         group_indicator[nodes_attr[val], val_idx] = 1
 
+                # Creates a multi-output oracle giving influence spread for each attribute group separately.
                 val_oracle = make_multilinear_objective_samples_group(live_graphs, group_indicator, list(g.nodes()),
                                                                       list(g.nodes()), np.ones(len(g)))
 
                 # build an objective function for each subgroup
                 f_attr = {}
                 f_multi_attr = {}
+                # Build Per-Group Influence Functions
                 for vidx, val in enumerate(values):
                     nodes_attr[val] = [v for v in g.nodes() if g.nodes[v][attribute] == val]
                     f_multi_attr[val] = valoracle_to_single(val_oracle, vidx)
@@ -376,17 +518,20 @@ for graphname in graphnames:
                     opt_attr = opt_succession
                 all_opt = np.array([opt_attr[val] for val in values])
 
-
+                # Evaluation Fitness Function
                 def Eval(SS):
+                    # Convert Seed Set to Indices
                     S = [ngIndex[int(i)] for i in SS]
                     fitness = 0
+                    # Create a 0/1 vector for the selected seed set
                     x = np.zeros(len(g.nodes))
                     x[list(S)] = 1
 
-                    vals = val_oracle(x, 1000)
-                    coverage_min = (vals / group_size[graphname][attribute][run]).min()
-                    violation = np.clip(all_opt - vals, 0, np.inf) / all_opt
+                    vals = val_oracle(x, 1000) # influence spread per attribute group
+                    coverage_min = (vals / group_size[graphname][attribute][run]).min() # Finds the least-covered group
+                    violation = np.clip(all_opt - vals, 0, np.inf) / all_opt # Measures how much each group falls short of its optimal possible influence.
 
+                    # Combine Coverage and Fairness into Fitness
                     fitness += alpha * coverage_min
                     fitness -= (1-alpha) * violation.sum() / len(values)
 
@@ -394,23 +539,26 @@ for graphname in graphnames:
 
 
                 # EA-start
-                pop = 10
-                mu = 0.1
-                cr = 0.6
-                maxgen = 150
+                pop = 10 # population size
+                mu = 0.1 # mutation rate
+                cr = 0.6 # crossover rate
+                maxgen = 150 # 150 iterations
 
                 address = 'networks/{}.txt'.format(graphname)
                 G = nx.read_edgelist(address, create_using=nx.Graph())
 
-                partition = community_louvain.best_partition(G)
-                comm_all_label = list(set(partition.values()))#社团标签，非节点
+                partition = community_louvain.best_partition(G) # Uses Louvain algorithm to detect communities.
+                
+                # Build Community Data
+                comm_all_label = list(set(partition.values()))
                 comm = []
                 for _ in range(len(comm_all_label)):
                     comm.append([])
                 for key in list(partition.keys()):
                     comm[partition[key]].append(key)
 
-                comm_label = []#每个社团含有的节点属性
+                # Map Each Community’s Attribute Composition
+                comm_label = []
                 for c in comm:
                     temp = set()
                     for cc in c:
@@ -419,15 +567,18 @@ for graphname in graphnames:
 
                 pr = nx.pagerank(G)
 
+                # Initialize Population
                 P = pop_init(pop, budget, comm, values,comm_label,nodes_attr,pr)
 
                 i = 0
                 while i < maxgen:
-                    P = sorted(P, key=lambda x: Eval(x), reverse=True)
+                    P = sorted(P, key=lambda x: Eval(x), reverse=True) # sort by fitness
 
+                    ##### BUG : Crossover never actually used #####
                     P_cr = crossover(P, cr, budget, partition, comm_label, comm, values, nodes_attr, pr)
                     P_mu = mutation(P, mu, comm, values,nodes_attr,pr)
 
+                    # Evaluate children and replace parents if better
                     for index in range(pop):
                         inf1 = Eval(P_mu[index])
                         inf2 = Eval(P[index])
@@ -436,6 +587,7 @@ for graphname in graphnames:
                             P[index] = P_mu[index]
                     i += 1
 
+                # Takes the best individual from the final generation.
                 SS = sorted(P, key=lambda x: Eval(x), reverse=True)[0]
                 SI = [ngIndex[int(si)] for si in SS]
 
@@ -467,6 +619,7 @@ for graphname in graphnames:
 
                 pof[run, attr_idx] = greedy_vals.sum() / all_fair_vals.sum()
 
+                # Storing in order for averaging accross runs
                 violation_0.append(fair_violation.sum() / len(values))
                 violation_1.append(greedy_violation.sum() / len(values))
                 min_fraction_0.append(fair_min)
