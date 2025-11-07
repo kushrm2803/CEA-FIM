@@ -13,12 +13,7 @@ import time
 from time import strftime, localtime
 import decimal
 from decimal import Decimal
-from fairness_utils import (
-    calculate_beta_for_communities,
-    compute_community_score_with_bridge_bonus,
-    calculate_bridge_aware_pagerank,
-    calculate_group_influence_potential
-)
+
 
 # Individual = one seed set (e.g., [3, 8, 15, 42, 50])
 # Gene = one node in that seed set
@@ -48,111 +43,149 @@ def valoracle_to_single(f, i):
     return f_single
 
 # Create the first random generation of population
-def pop_init(pop, budget, comm, values, comm_label, nodes_attr, prank, 
-             G, partition, g, ngIndex, attribute, gamma=1.0):
-    """
-    Enhanced population initialization with bridge-node bonus.
-    
-    New parameters:
-        G: NetworkX graph for beta calculation
-        partition: node → community mapping
-        g: original graph
-        ngIndex: node ID to index mapping
-        attribute: attribute name
-        gamma: controls strength of bridge bonus (default 1.0)
-    """
+def pop_init(pop, budget, comm, values, comm_label,nodes_attr,prank):
+    '''
+    pop:    Number of individuals in population (e.g. 30)
+    budget: How many seed nodes per individual (e.g. 5 or 10)
+    comm:   List of communities, where each comm[t] = list of node IDs in that community
+    (example : comm = [
+        [0, 1],       # community 0: nodes 0 and 1
+        [2, 3],       # community 1: nodes 2 and 3
+        [4, 5, 6]     # community 2: nodes 4,5,6
+    ])
+    values: List of possible attribute values (e.g. If attribute = gender, then {male, female})
+    comm_label: For each community t, set of which attributes appear there 
+    ( example : comm_label = [
+        ['Male', 'Female'],
+        ['Male'],
+        ['Female', 'Male']
+    ])
+    nodes_attr: For each attribute value, which nodes have that value
+    (example : nodes_attr = {
+        'Male':   [0, 2, 3, 6],
+        'Female': [1, 4, 5]
+    })
+    prank:  PageRank score per node (importance score from the graph)
+    '''
     P = []
-    
-    # Calculate β for all communities ONCE
-    beta = calculate_beta_for_communities(G, partition, comm, g, ngIndex, 
-                                          attribute, nodes_attr, gamma)
-    
+
     for _ in range(pop):
-        P_it1 = []
-        
+        P_it1 = [] # list of candidate seed nodes
+
         # Initialize attribute control variables
-        comm_score = {}
-        u = {}
-        selected_attr = {}
         
+        comm_score = {} # The score of each community (used to select communities)
+        u = {} # A weight controlling how “desirable” each attribute value currently is (used to balance attributes)
+        selected_attr = {} # How many nodes of each attribute have been selected so far
+
+        # All attribute values are equally important at the start.
         for cal in values:
             u[cal] = 1
             selected_attr[cal] = 0
-        
-        # Compute initial community scores WITH BRIDGE BONUS
+
+        # Compute initial community scores
         for t in range(len(comm)):
-            comm_score[t] = compute_community_score_with_bridge_bonus(
-                comm, comm_label, u, beta, t
-            )
-        
+            sco1 = len(comm[t]) # size of community
+            sco2 = 0
+
+            for ca in comm_label[t]: # which attributes appear in this community
+                sco2 += u[ca]
+
+            # Bigger communities → higher sco1
+            # Communities that contain more attributes → higher sco2
+            comm_score[t] = sco1 * sco2
+
         comm_sel = {}
-        
+
         # Select communities probabilistically
         for _ in range(budget):
-            a = list(comm_score.keys())
-            b = list(comm_score.values())
-            
+            a = list(comm_score.keys()) # community id
+            b = list(comm_score.values())   #score
+
+            # normalize b (convert scores into probabilities)
             b_sum = sum(b)
             for deg in range(len(b)):
                 b[deg] /= b_sum
             b = np.array(b)
-            
+            # choose one community at random such that communities with higher score → higher chance to be picked.
             tar_comm = np.random.choice(a, size=1, p=b.ravel())[0]
-            
+
+            # Record how many nodes to pick from each community
             if tar_comm in list(comm_sel.keys()):
                 comm_sel[tar_comm] += 1
             else:
                 comm_sel[tar_comm] = 1
+                # Weight of an attribute is only decreased for first time
                 for att in comm_label[tar_comm]:
-                    selected_attr[att] += len(set(nodes_attr[att]) & set(comm[tar_comm]))
-                    u[att] = math.exp(-1 * selected_attr[att] / len(nodes_attr[att]))
-            
-            # Recompute community scores with updated u
+                    selected_attr[att] += len(set(nodes_attr[att])&set(comm[tar_comm])) # counts how many nodes of that attribute exist in this community.
+                    # If we already picked many nodes with attribute att,
+                    # u[att] becomes smaller (because exp(-x) decreases).
+                    # So next time, we’ll prefer other attributes — ensuring attribute balance.
+                    u[att] = math.exp(-1*selected_attr[att]/len(nodes_attr[att])) 
+
+            # Recompute community scores
             for t in range(len(comm)):
-                comm_score[t] = compute_community_score_with_bridge_bonus(
-                    comm, comm_label, u, beta, t
-                )
-        
+                sco1 = len(comm[t])
+                sco2 = 0
+
+                for ca in comm_label[t]:
+                    sco2 += u[ca]
+
+                comm_score[t] = sco1 * sco2
+                
         # Select top nodes within chosen communities
         for cn in list(comm_sel.keys()):
             pr = {}
+            # For each selected community, we get PageRank scores of its nodes.
             for nod in comm[cn]:
                 pr[nod] = prank[nod]
-            
+
             pr = sorted(pr.items(), key=lambda x: x[1], reverse=True)
+            # Pick number of nodes equal to comm_sel of the community
             for pr_ind in range(comm_sel[cn]):
                 P_it1.append(pr[pr_ind][0])
-        
+
         P.append(P_it1)
-    
+
     return P
 
 # swaps nodes between paired seed sets, repairs any seed set that lost nodes
-def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, prank,
-              G, g, ngIndex, attribute, gamma=1.0):  # ADD NEW PARAMETERS
+def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, prank):
     '''
-    Enhanced crossover with bridge-aware community scoring
+    P1 — list of seed sets; each seed set is a list of node IDs.
+    Example: P1 = [[1,2,3], [4,5,6], [7,8,9], [10,11,12]]
+    cr — crossover probability per nodes.
+    budget — desired number of nodes per individual.
+    partition — dict: node_id → community_id.
+    comm — list of communities, each a list of node IDs.
+    Example: comm = [[1,2], [3,4], [5,6,7]]
+    comm_label — for each community id, list of attribute values present there (unique values).
+    Example: comm_label = [['M'], ['F'], ['M','F']]
+    values — list of attribute values (categories).
+    Example: values = ['M','F']
+    nodes_attr — dict: attr_value → list of node IDs with that value.
+    Example: nodes_attr = {'M':[1,3,5], 'F':[2,4,6]}
+    prank — dict: node_id → pagerank score (float).
     '''
     P = copy.deepcopy(P1)
-    
-    # Calculate beta ONCE for this crossover operation
-    beta = calculate_beta_for_communities(G, partition, comm, g, ngIndex, 
-                                          attribute, nodes_attr, gamma)
 
     # Pairwise gene swapping
+    # Pair i with len(P)-i-1 and so on
     for i in range(int(len(P)/2)):
         for j in range(len(P[i])):
+            # Swap jth gene of both individuals
             if random.random() < cr:
                 temp = P[i][j]
                 P[i][j] = P[len(P)-i-1][j]
                 P[len(P)-i-1][j] = temp
 
-    # repair & fill missing nodes
+    # repair & fill missing nodes to remove duplicates or fill fewer than budget
     for i in range(len(P)):
-        P[i] = list(set(P[i]))
+        P[i] = list(set(P[i])) # removes duplicates
         if len(P[i]) == budget:
             continue
 
+        # Prepare community scores
         comm_score = {}
         u = {}
         selected_attr = {}
@@ -160,31 +193,41 @@ def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, p
             u[cal] = 1
             selected_attr[cal] = 0
 
+        # Find which communities are already present in the individual
         all_comm = []
         for node in P[i]:
             all_comm.append(partition[node])
         all_comm = list(set(all_comm))
 
+        # Update selected_attr and u based on communities already present
         for ac in all_comm:
             for ca in comm_label[ac]:
                 selected_attr[ca] += len(set(nodes_attr[ca]) & set(comm[ac]))
                 u[ca] = math.exp(-1 * selected_attr[ca] / len(nodes_attr[ca]))
 
-        # UPDATED: Use bridge-aware scoring
+        # Compute current community scores
         for t in range(len(comm)):
-            comm_score[t] = compute_community_score_with_bridge_bonus(
-                comm, comm_label, u, beta, t
-            )
+            sco1 = len(comm[t])
+            sco2 = 0
 
+            for ca in comm_label[t]:
+                sco2 += u[ca]
+
+            comm_score[t] = sco1 * sco2
+
+        # Fill until budget reached
         while len(P[i])<budget:
-            a = list(comm_score.keys())
-            b = list(comm_score.values())
+            a = list(comm_score.keys())  # comm id
+            b = list(comm_score.values())  # score
 
+            # normalize b to probabilities
             b_sum = sum(b)
             for deg in range(len(b)):
                 b[deg] /= b_sum
             b = np.array(b)
             tar_comm = np.random.choice(a, size=1, p=b.ravel())[0]
+
+            ###### BUG: The refill step doesn’t preserve community/attribute balance — it fills nodes randomly, so underrepresented communities may get ignored. Need to check this ######
 
             if tar_comm not in all_comm:
                 all_comm.append(tar_comm)
@@ -193,6 +236,7 @@ def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, p
                     selected_attr[ca] += len(set(nodes_attr[ca]) & set(comm[tar_comm]))
                     u[ca] = math.exp(-1 * selected_attr[ca] / len(nodes_attr[ca]))
 
+            # Build a PageRank probability distribution
             pr = {}
             for nod in comm[tar_comm]:
                 pr[nod] = prank[nod]
@@ -200,41 +244,66 @@ def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, p
             aa = list(pr.keys())
             bb = list(pr.values())
 
+            # Normalize PageRank scores to probabilities.
             bb_sum = sum(bb)
             for deg in range(len(bb)):
                 bb[deg] /= bb_sum
             bb = np.array(bb)
 
+            # Pick one node from the chosen community, biased by PageRank scores.
             while True:
                 tar_node = np.random.choice(aa, size=1, p=bb.ravel())[0]
                 if tar_node not in P[i]:
                     P[i].append(tar_node)
                     break
 
-            # UPDATED: Recompute with bridge-aware scoring
+            # Update community scores after adding a new node
             for t in range(len(comm)):
-                comm_score[t] = compute_community_score_with_bridge_bonus(
-                    comm, comm_label, u, beta, t
-                )
+                sco1 = len(comm[t])
+                sco2 = 0
+
+                for ca in comm_label[t]:
+                    sco2 += u[ca]
+
+                comm_score[t] = sco1 * sco2
 
     return P
 
-
 # mutation randomly changes a few “genes” in individuals so the search doesn’t get stuck in local optima.
-def mutation(P1, mu, comm, values, nodes_attr, prank, partition, comm_label,
-             G, g, ngIndex, attribute, gamma=1.0):  # ADD NEW PARAMETERS
+def mutation(P1, mu, comm, values,nodes_attr,prank):
     '''
-    Enhanced mutation with bridge-aware community scoring
+    P1:     Current population — list of individuals (each individual = list of node IDs)
+    Example: P1 = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+    mu:     Mutation probability — chance of replacing a node
+    comm:   List of communities, where each comm[t] = list of node IDs in that community
+            Example: comm = [
+                [0, 1],       # community 0
+                [2, 3],       # community 1
+                [4, 5, 6]     # community 2
+            ]
+    values: List of possible attribute values (e.g. demographic categories)
+            Example: values = ['Male', 'Female']
+    nodes_attr: For each attribute value, which nodes have that attribute
+            Example: nodes_attr = {
+                'Male':   [0, 2, 3, 6],
+                'Female': [1, 4, 5]
+            }
+    prank:  PageRank score per node (importance score from the network)
+    partition: Dictionary mapping each node ID → its community ID
+    comm_label: For each community t, list of attribute values present in that community
+            Example: comm_label = [
+                ['Male', 'Female'],
+                ['Male'],
+                ['Female']
+            ]
     '''
     P = copy.deepcopy(P1)
-    
-    # Calculate beta ONCE for this mutation operation
-    beta = calculate_beta_for_communities(G, partition, comm, g, ngIndex, 
-                                          attribute, nodes_attr, gamma)
 
+    # For each node within a seedset if the rolled random number is less than mutation probability mu, replace that node
     for i in range(len(P)):
         for j in range(len(P[i])):
             if random.random() < mu:
+                # Initialize attribute control variables
                 comm_score = {}
                 u = {}
                 selected_attr = {}
@@ -242,32 +311,40 @@ def mutation(P1, mu, comm, values, nodes_attr, prank, partition, comm_label,
                     u[cal] = 1
                     selected_attr[cal] = 0
                 
+                # Find which communities are already present in the individual
                 all_comm = []
                 for node in P[i]:
                     all_comm.append(partition[node])
-                all_comm.remove(partition[P[i][j]])
+                all_comm.remove(partition[P[i][j]]) # removes the community of the node being replaced
                 all_comm = list(set(all_comm))
 
+                # Update attribute coverage scores
                 for ac in all_comm:
                     for ca in comm_label[ac]:
                         selected_attr[ca] += len(set(nodes_attr[ca]) & set(comm[ac]))
                         u[ca] = math.exp(-1 * selected_attr[ca] / len(nodes_attr[ca]))
 
-                # UPDATED: Use bridge-aware scoring
+                # Compute community scores
                 for t in range(len(comm)):
-                    comm_score[t] = compute_community_score_with_bridge_bonus(
-                        comm, comm_label, u, beta, t
-                    )
+                    sco1 = len(comm[t])
+                    sco2 = 0
 
-                a = list(comm_score.keys())
-                b = list(comm_score.values())
+                    for ca in comm_label[t]:
+                        sco2 += u[ca]
+
+                    comm_score[t] = sco1 * sco2
+
+                a = list(comm_score.keys())  # comm id
+                b = list(comm_score.values())  # score
 
                 b_sum = sum(b)
                 for deg in range(len(b)):
                     b[deg] /= b_sum
                 b = np.array(b)
+                # Randomly pick a community to mutate into — biased by community scores
                 tar_comm = np.random.choice(a, size=1, p=b.ravel())[0]
 
+                # Inside the chosen community, nodes are weighted by their PageRank scores.
                 pr = {}
                 for nod in comm[tar_comm]:
                     pr[nod] = prank[nod]
@@ -280,6 +357,7 @@ def mutation(P1, mu, comm, values, nodes_attr, prank, partition, comm_label,
                     bb[deg] /= bb_sum
                 bb = np.array(bb)
 
+                # Randomly select one node from the target community based on PageRank weights.
                 while True:
                     tar_node = np.random.choice(aa, size=1, p=bb.ravel())[0]
                     if tar_node not in P[i]:
@@ -287,7 +365,6 @@ def mutation(P1, mu, comm, values, nodes_attr, prank, partition, comm_label,
                         break
 
     return P
-
 
 
 '''
@@ -315,7 +392,7 @@ attributes = ['color'] # List of node attributes (demographic categories) to ens
 
 for graphname in graphnames:
     print(graphname)
-    for budget in [1000]: # The number of seed nodes to choose for influence maximization
+    for budget in [40]: # The number of seed nodes to choose for influence maximization
         g = pickle.load(open('networks/{}.pickle'.format(graphname), 'rb'))
         ng = list(g.nodes()) # list of node IDs in the graph Example → [100, 102, 105, ...]
         ngIndex = {} # mapping from node ID to its index in ng Example → {100:0, 102:1, 105:2, ...}
@@ -493,37 +570,46 @@ for graphname in graphnames:
                 group_sizes = {val: len(nodes) for val, nodes in nodes_attr.items()}
 
                 # 2. Create the un-normalized personalization vector.
-                # Each node's weight is the inverse of its group's size
+                # Each node's weight is the inverse of its group's size.
+                personalization = {}
+                for node_str in G.nodes():
+                    # Map node ID from G (string) to the graph g (integer) to get its attribute
+                    try:
+                        node_g_idx = ngIndex[int(node_str)]
+                        attr_val = g.nodes[node_g_idx][attribute]
+                        group_size_val = group_sizes.get(attr_val, 0)
+                    
+                        # To avoid division by zero if a group has 0 members (edge case)
+                        if group_size_val > 0:
+                            personalization[node_str] = 1.0 / group_size_val
+                        else:
+                            personalization[node_str] = 0
+                    except (KeyError, ValueError):
+                        # Handle cases where a node in G might not be in g or ngIndex
+                        personalization[node_str] = 0
+
+                # 3. Normalize the personalization vector so its values sum to 1.
+                # networkx requires this for the 'personalization' parameter.
+                total_weight = sum(personalization.values())
+                p_vector = None
+                if total_weight > 0:
+                    p_vector = {node: weight / total_weight for node, weight in personalization.items()}
+                
+                # 4. Compute the biased PageRank and assign it to 'pr'.
+                # If p_vector is None (e.g., all weights were 0), networkx defaults to standard PageRank.
+                pr = nx.pagerank(G, personalization=p_vector)
                 # --- End of Fairness-Biased Personalized PageRank Calculation ---
 
-
-                print("Calculating group influence potentials...")
-                group_influence = calculate_group_influence_potential(
-                    g, nodes_attr, live_graphs, val_oracle, values
-                )
-
-                # Calculate enhanced PageRank with all improvements
-                pr = calculate_bridge_aware_pagerank(
-                    G, g, ngIndex, attribute, nodes_attr, values, 
-                    partition, comm, 
-                    u={val: 1.0 for val in values},  # Initial u values
-                    selected_attr=None,  # No selection history yet
-                    group_influence=group_influence,
-                    alpha_size=1.0,        # Weight for size-based fairness
-                    alpha_influence=0.5,   # Weight for structural fairness
-                    alpha_deficit=0.3,     # Weight for temporal fairness
-                    alpha_bridge=0.2,      # Weight for bridge node bonus
-                    damping=0.85
-                )
                 # Initialize Population
-                P = pop_init(pop, budget, comm, values, comm_label, nodes_attr, pr, G, partition, g, ngIndex, attribute, gamma=1.0)
+                P = pop_init(pop, budget, comm, values,comm_label,nodes_attr,pr)
+
                 i = 0
                 while i < maxgen:
                     P = sorted(P, key=lambda x: Eval(x), reverse=True) # sort by fitness
 
                     ##### BUG : Crossover never actually used #####
-                    P_cr = crossover(P, cr, budget, partition, comm_label, comm, values, nodes_attr, pr,G, g, ngIndex, attribute, gamma=1.0)
-                    P_mu = mutation(P, mu, comm, values ,nodes_attr, pr, partition, comm_label,G, g, ngIndex, attribute, gamma=1.0)
+                    P_cr = crossover(P, cr, budget, partition, comm_label, comm, values, nodes_attr, pr)
+                    P_mu = mutation(P, mu, comm, values,nodes_attr,pr)
 
                     # Evaluate children and replace parents if better
                     for index in range(pop):
