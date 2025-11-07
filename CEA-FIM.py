@@ -68,7 +68,7 @@ def pop_init(pop, budget, comm, values, comm_label,nodes_attr,prank):
     prank:	PageRank score per node (importance score from the graph)
     '''
     P = []
-
+    # Create pop number of individual seed seets 
     for _ in range(pop):
         P_it1 = [] # list of candidate seed nodes
 
@@ -88,11 +88,11 @@ def pop_init(pop, budget, comm, values, comm_label,nodes_attr,prank):
             sco1 = len(comm[t]) # size of community
             sco2 = 0
 
-            for ca in comm_label[t]: # which attributes appear in this community
+            for ca in comm_label[t]: # which attribute groups appear in this community
                 sco2 += u[ca]
 
             # Bigger communities → higher sco1
-            # Communities that contain more attributes → higher sco2
+            # Communities that contain more attribute groups → higher sco2
             comm_score[t] = sco1 * sco2
 
         comm_sel = {}
@@ -112,15 +112,16 @@ def pop_init(pop, budget, comm, values, comm_label,nodes_attr,prank):
 
             # Record how many nodes to pick from each community
             if tar_comm in list(comm_sel.keys()):
-                comm_sel[tar_comm] += 1
+                comm_sel[tar_comm] += 1 # counter is picked from each community
             else:
                 comm_sel[tar_comm] = 1
-                # Weight of an attribute is only decreased for first time
+                # Weight of an attribute group is only decreased for first time
                 for att in comm_label[tar_comm]:
-                    selected_attr[att] += len(set(nodes_attr[att])&set(comm[tar_comm])) # counts how many nodes of that attribute exist in this community.
+                    selected_attr[att] += len(set(nodes_attr[att])&set(comm[tar_comm])) # counts how many nodes of that attribute group exist in this community.
                     # If we already picked many nodes with attribute att,
                     # u[att] becomes smaller (because exp(-x) decreases).
                     # So next time, we’ll prefer other attributes — ensuring attribute balance.
+                    # decaying factor : Nodes Within community having the attribute value / Total nodes in graphs having the attribute value
                     u[att] = math.exp(-1*selected_attr[att]/len(nodes_attr[att])) 
 
             # Recompute community scores
@@ -226,8 +227,6 @@ def crossover(P1, cr, budget, partition, comm_label, comm, values, nodes_attr, p
                 b[deg] /= b_sum
             b = np.array(b)
             tar_comm = np.random.choice(a, size=1, p=b.ravel())[0]
-
-            ###### BUG: The refill step doesn’t preserve community/attribute balance — it fills nodes randomly, so underrepresented communities may get ignored. Need to check this ######
 
             if tar_comm not in all_comm:
                 all_comm.append(tar_comm)
@@ -404,7 +403,7 @@ for graphname in graphnames:
         for u, v in g.edges():
             g[u][v]['p'] = p
 
-        g = nx.convert_node_labels_to_integers(g, label_attribute='pid')
+        g = nx.convert_node_labels_to_integers(g, label_attribute='pid') # Labelling the nodes as integers if not
 
         group_size[graphname] = {}
 
@@ -429,7 +428,7 @@ for graphname in graphnames:
             group_indicator = np.ones((len(g.nodes()), 1))
 
             val_oracle = make_multilinear_objective_samples_group(live_graphs, group_indicator, list(g.nodes()),
-                                                                  list(g.nodes()), np.ones(len(g))) # objective function for overall influence
+                                                                  list(g.nodes()), np.ones(len(g))) # gives objective function for overall influence of each group
             # f_multi(x) returns total influence spread by seed set x
             def f_multi(x):
                 return val_oracle(x, 1000).sum()
@@ -454,7 +453,7 @@ for graphname in graphnames:
                 print(strftime("%Y-%m-%d %H:%M:%S", localtime()))
                 # find overall optimal solution
                 start_time1 = time.perf_counter()
-                S, obj = greedy(list(range(len(g))), budget, f_set) # Greedy influence maximization S: selected nodes, obj: achieved influence value
+                S, obj = greedy(list(range(len(g))), budget, f_set) # Greedy influence maximization using celf S: selected nodes, obj: achieved influence value
                 end_time1 = time.perf_counter()
                 runningtime1 = end_time1 - start_time1
 
@@ -470,6 +469,7 @@ for graphname in graphnames:
                     group_size[graphname][attribute][run, vidx] = len(nodes_attr[val])
 
                 # For each group (e.g., region), builds a subgraph, samples influence spread, and finds the optimal seed set within that group using greedy.
+                # Calculate best potential influence spread per group by creating temporary subgraphs that only contain nodes from that group and running greedy on them, budget is propertional to group size.
                 opt_succession = {}
                 if succession:
                     for vidx, val in enumerate(values):
@@ -574,7 +574,6 @@ for graphname in graphnames:
                 while i < maxgen:
                     P = sorted(P, key=lambda x: Eval(x), reverse=True) # sort by fitness
 
-                    ##### BUG : Crossover never actually used #####
                     P_cr = crossover(P, cr, budget, partition, comm_label, comm, values, nodes_attr, pr)
                     P_mu = mutation(P, mu, comm, values,nodes_attr,pr)
 
