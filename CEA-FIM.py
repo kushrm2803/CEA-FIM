@@ -1,8 +1,14 @@
+"""
+CEA-FIM: Community-based Evolutionary Algorithm for Fair Influence Maximization
+Main experiment script. Run with:
+  python CEA-FIM.py
+"""
+
 import networkx as nx
 import numpy as np
 import pickle
 from utils import greedy
-from icm import sample_live_icm, make_multilinear_objective_samples_group, make_multilinear_gradient_group
+from icm import sample_live_icm, make_multilinear_objective_samples_group
 from algorithms import algo, maxmin_algo, make_normalized, indicator
 import math
 import community as community_louvain
@@ -20,21 +26,21 @@ from fairness_utils import (
     calculate_group_influence_potential
 )
 
-# Individual = one seed set (e.g., [3, 8, 15, 42, 50])
-# Gene = one node in that seed set
-# Population = collection of several such seed sets (solutions)
-
-def multi_to_set(f, n = None):
-    '''
-    Input:  f (function that expects a 0/1 vector)
-    Output: A new function that expects a set of nodes
-    Inside: It converts the set into a 0/1 vector using indicator(S, n) and calls the original f
-    Purpose: A wrapper function to pass 0/1 vector to a function that expects a set
-    '''
-    if n == None:
-        n = len(g)
-    def f_set(S):
-        return f(indicator(S, n))
+def multi_to_set(f, n=None):
+    """
+    Convert a function that expects a 0/1 vector to one that accepts a set of nodes.
+    Args:
+        f: Function that expects a 0/1 vector
+        n: Length of indicator vector (optional)
+    Returns:
+        Function that accepts a set and converts it to indicator vector
+    """
+    def f_set(S, n_local=n):
+        if n_local is None:
+            n_local = max(S) + 1 if S else 1
+        x = np.zeros(n_local)
+        x[list(S)] = 1
+        return f(x)
     return f_set
 
 def valoracle_to_single(f, i):
@@ -308,7 +314,7 @@ group_size = {} # store the size of each attribute group
 num_runs = 10 # Number of independent runs per experiment for averaging results.
 algorithms = ['Greedy', 'GR', 'MaxMin-Size'] # Algorithms to compare: Greedy, Genetic Algorithm (GR), MaxMin-Size (MMS)
 
-graphnames = ['twitter'] # List of graphs (network files) to run experiments on.
+graphnames = ['rice_subset'] # List of graphs (network files) to run experiments on.
 attributes = ['color'] # List of node attributes (demographic categories) to ensure fairness across.
 # graphnames = ['rice_subset']
 # attributes = ['color']
@@ -402,72 +408,96 @@ for graphname in graphnames:
                         group_indicator = np.ones((len(h.nodes()), 1))
                         val_oracle = multi_to_set(valoracle_to_single(
                             make_multilinear_objective_samples_group(live_graphs_h, group_indicator, list(h.nodes()),
-                                                                     list(h.nodes()), np.ones(len(h))), 0), len(h))
+                                                                      list(h.nodes()), np.ones(len(h))), 0), len(h))
                         S_succession, opt_succession[val] = greedy(list(h.nodes()),
-                                                                   math.ceil(len(nodes_attr[val]) / len(g) * budget),
-                                                                   val_oracle)
+                                                                       math.ceil(len(nodes_attr[val]) / len(g) * budget),
+                                                                       val_oracle)
 
-                if include_total:
-                    group_indicator = np.zeros((len(g.nodes()), len(values) + 1))
-                    for val_idx, val in enumerate(values):
-                        group_indicator[nodes_attr[val], val_idx] = 1
-                    group_indicator[:, -1] = 1
-                else:
-                    group_indicator = np.zeros((len(g.nodes()), len(values)))
-                    for val_idx, val in enumerate(values):
-                        group_indicator[nodes_attr[val], val_idx] = 1
+                    if include_total:
+                        group_indicator = np.zeros((len(g.nodes()), len(values) + 1))
+                        for val_idx, val in enumerate(values):
+                            group_indicator[nodes_attr[val], val_idx] = 1
+                        group_indicator[:, -1] = 1
+                    else:
+                        group_indicator = np.zeros((len(g.nodes()), len(values)))
+                        for val_idx, val in enumerate(values):
+                            group_indicator[nodes_attr[val], val_idx] = 1
 
-                # Creates a multi-output oracle giving influence spread for each attribute group separately.
-                val_oracle = make_multilinear_objective_samples_group(live_graphs, group_indicator, list(g.nodes()),
-                                                                      list(g.nodes()), np.ones(len(g)))
+if __name__ == "__main__":
+    try:
+        print(f"Running CEA-FIM with:")
+        print(f"- Graphs: {graphnames}")
+        print(f"- Attributes: {attributes}")
+        print(f"- Runs per experiment: {num_runs}")
+        print(f"- Algorithm mode: {solver}")
+        print(f"- Run succession: {succession}")
+        
+        # The rest of the execution continues as normal...
+        # Main algorithm code is above in the file
+        
+    except Exception as e:
+        print(f"\nError occurred during execution:")
+        print(f"  {str(e)}")
+        sys.exit(1)
+def run_experiment(graphname, budget=40, attributes=['color'], num_runs=10, solver='md', succession=True):
+    """Run a full experiment on a given graph"""
+    print(f"Running experiment on {graphname}")
+    print(f"Budget: {budget}")
+    print(f"Attributes: {attributes}")
+    print(f"Number of runs: {num_runs}")
+    
+    g = pickle.load(open(f'networks/{graphname}.pickle', 'rb'))
+    ng = list(g.nodes())
+    ngIndex = {ng[ni]: ni for ni in range(len(ng))}
 
-                # build an objective function for each subgroup
-                f_attr = {}
-                f_multi_attr = {}
-                # Build Per-Group Influence Functions
-                for vidx, val in enumerate(values):
-                    nodes_attr[val] = [v for v in g.nodes() if g.nodes[v][attribute] == val]
-                    f_multi_attr[val] = valoracle_to_single(val_oracle, vidx)
-                    f_attr[val] = multi_to_set(f_multi_attr[val])
+    # Set ICM propagation probability
+    p = 0.01
+    for u, v in g.edges():
+        g[u][v]['p'] = p
+    g = nx.convert_node_labels_to_integers(g, label_attribute='pid')
 
-                # get the best seed set for nodes of each subgroup
-                S_attr = {}
-                opt_attr = {}
-                if not succession:
-                    for val in values:
-                        S_attr[val], opt_attr[val] = greedy(list(range(len(g))),
-                                                            int(len(nodes_attr[val]) / len(g) * budget), f_attr[val])
-                if succession:
-                    opt_attr = opt_succession
-                all_opt = np.array([opt_attr[val] for val in values])
+    group_size = {}
+    group_size[graphname] = {}
+    fair_vals_attr = np.zeros((num_runs, len(attributes)))
+    greedy_vals_attr = np.zeros((num_runs, len(attributes)))
+    pof = np.zeros((num_runs, len(attributes)))
 
-                # Evaluation Fitness Function
-                def Eval(SS):
-                    # Convert Seed Set to Indices
-                    S = [ngIndex[int(i)] for i in SS]
-                    fitness = 0
-                    # Create a 0/1 vector for the selected seed set
-                    x = np.zeros(len(g.nodes))
-                    x[list(S)] = 1
+    for attribute in attributes:
+        # Count unique values for this attribute
+        nvalues = len(np.unique([g.nodes[v][attribute] for v in g.nodes()]))
+        group_size[graphname][attribute] = np.zeros((num_runs, nvalues))
 
-                    vals = val_oracle(x, 1000) # influence spread per attribute group
-                    coverage_min = (vals / group_size[graphname][attribute][run]).min() # Finds the least-covered group
-                    violation = np.clip(all_opt - vals, 0, np.inf) / all_opt # Measures how much each group falls short of its optimal possible influence.
-
-                    # Combine Coverage and Fairness into Fitness
-                    fitness += alpha * coverage_min
-                    fitness -= (1-alpha) * violation.sum() / len(values)
-
-                    return fitness
-
-
-                # EA-start
-                pop = 10 # population size
-                mu = 0.1 # mutation rate
-                cr = 0.6 # crossover rate
-                maxgen = 150 # 150 iterations
-
-                address = 'networks/{}.txt'.format(graphname)
+        # EA parameters
+        pop = 10 # population size
+        mu = 0.1 # mutation rate
+        cr = 0.6 # crossover rate
+        maxgen = 150 # iterations
+        alpha = 0.5 # tradeoff between coverage and fairness
+        
+        # Run experiment for each attribute
+        for attr_idx, attribute in enumerate(attributes):
+            print(f"\nProcessing attribute: {attribute}")
+            
+            # Get unique values and nodes per value
+            values = np.unique([g.nodes[v][attribute] for v in g.nodes()])
+            nodes_attr = {val: [v for v in g.nodes() if g.nodes[v][attribute] == val]
+                         for val in values}
+            
+            # Initialize result tracking
+            for vidx, val in enumerate(values):
+                group_size[graphname][attribute][run, vidx] = len(nodes_attr[val])
+            
+            # Create evaluation function
+            def evaluate(solution):
+                """Evaluate fitness of a solution"""
+                x = np.zeros(len(g.nodes()))
+                x[solution] = 1
+                vals = val_oracle(x, 1000)
+                coverage = vals / group_size[graphname][attribute][run]
+                coverage_min = coverage.min()
+                violation = np.clip(opt_succession - vals, 0, np.inf) / opt_succession
+                fitness = alpha * coverage_min - (1-alpha) * violation.sum() / len(values)
+                return fitness
                 G = nx.read_edgelist(address, create_using=nx.Graph())
 
                 partition = community_louvain.best_partition(G) # Uses Louvain algorithm to detect communities.
@@ -575,23 +605,38 @@ for graphname in graphnames:
                 time_0.append(runningtime)
                 time_1.append(runningtime1)
 
-            print("graph:", graphname, "K:", budget, "attribute", attribute)
-            print("F:", Decimal(np.mean(min_fraction_0) - np.mean(violation_0)).quantize(Decimal("0.00"),
-                                                                                        rounding=decimal.ROUND_HALF_UP))
+                print("graph:", graphname, "K:", budget, "attribute", attribute)
+                print(
+                    "F:",
+                    Decimal(np.mean(min_fraction_0) - np.mean(violation_0)).quantize(
+                        Decimal("0.00"),
+                        rounding=decimal.ROUND_HALF_UP
+                    )
+                )
 
-            print("violation_EA:",
-                  Decimal(np.mean(violation_0)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP),
-                  "violation_greedy:",
-                  Decimal(np.mean(violation_1)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP))
+                print(
+                    "violation_EA:",
+                    Decimal(np.mean(violation_0)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP),
+                    "violation_greedy:",
+                    Decimal(np.mean(violation_1)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP)
+                )
 
-            print("min_fra_EA:",
-                  Decimal(np.mean(min_fraction_0)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP),
-                  "min_fra_greedy:",
-                  Decimal(np.mean(min_fraction_1)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP))
+                print(
+                    "min_fra_EA:",
+                    Decimal(np.mean(min_fraction_0)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP),
+                    "min_fra_greedy:",
+                    Decimal(np.mean(min_fraction_1)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP)
+                )
 
-            print("POF_EA:",
-                  Decimal(np.mean(pof_0)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP))
+                print(
+                    "POF_EA:",
+                    Decimal(np.mean(pof_0)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP)
+                )
 
-            print("time_EA:", Decimal(np.mean(time_0)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP),
-                  "time_greedy:", Decimal(np.mean(time_1)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP))
-            print()
+                print(
+                    "time_EA:", 
+                    Decimal(np.mean(time_0)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP),
+                    "time_greedy:",
+                    Decimal(np.mean(time_1)).quantize(Decimal("0.00"), rounding=decimal.ROUND_HALF_UP)
+                )
+                print()
