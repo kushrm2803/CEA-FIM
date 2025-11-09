@@ -1,23 +1,83 @@
 
-def visualize_set(g, S, all_nodes):
-    '''
-    Draws a visualization of g, with the nodes in S much bigger/colored and the
-    nodes in all_nodes drawn in a medium size. Helpful to visualize seed sets/
-    conduct sanity checks.
-    '''
+"""
+Utility functions for the CEA-FIM algorithm.
+
+This module contains various helper functions for visualization,
+data processing, and algorithm implementations.
+"""
+
+from typing import Set, Dict, List, Any, Optional, Union, Tuple
+
+try:
+    import numpy as np
+except ImportError:
+    raise ImportError("numpy is required. Install with: pip install numpy")
+
+try:
     import networkx as nx
-    node_color = []
-    node_size = []
-#    g = nx.subgraph(g, all_nodes)
-    for v in g.nodes():
-        if v in S:
-            node_color.append('b')
-            node_size.append(300)
-        elif v in all_nodes:
-            node_color.append('y')
-            node_size.append(100)
+except ImportError:
+    raise ImportError("networkx is required. Install with: pip install networkx")
+
+# Optional imports
+HAS_CVXPY = False
+try:
+    import cvxpy as cp
+    HAS_CVXPY = True
+except ImportError:
+    # CVXPY is optional, only needed for some optimization functions
+    pass
+
+# Constants
+DEFAULT_SEED_COLOR = 'blue'
+DEFAULT_HIGHLIGHT_COLOR = 'yellow'
+DEFAULT_NODE_COLOR = 'black'
+DEFAULT_SEED_SIZE = 300
+DEFAULT_HIGHLIGHT_SIZE = 100
+DEFAULT_NODE_SIZE = 50
+EPSILON = 1e-6  # Small value for numerical comparisons
+
+def visualize_set(
+    graph: nx.Graph,
+    seed_set: Set[int],
+    highlighted_nodes: Optional[Set[int]] = None,
+    seed_color: str = 'b',
+    highlight_color: str = 'y',
+    other_color: str = 'k',
+    seed_size: int = 300,
+    highlight_size: int = 100,
+    other_size: int = 50
+) -> None:
+    """Visualize a graph with highlighted seed set and other nodes.
+    
+    Draw the graph with seed nodes emphasized through size and color.
+    Optionally highlight additional nodes with different styling.
+    
+    Args:
+        graph: NetworkX graph to visualize
+        seed_set: Set of seed nodes to emphasize
+        highlighted_nodes: Additional nodes to highlight (optional)
+        seed_color: Color for seed nodes (default: blue)
+        highlight_color: Color for highlighted nodes (default: yellow) 
+        other_color: Color for other nodes (default: black)
+        seed_size: Size for seed nodes (default: 300)
+        highlight_size: Size for highlighted nodes (default: 100)
+        other_size: Size for other nodes (default: 50)
+    """
+    node_colors = []
+    node_sizes = []
+    
+    highlighted_nodes = highlighted_nodes or set()
+    
+    for node in graph.nodes():
+        if node in seed_set:
+            node_colors.append(seed_color)
+            node_sizes.append(seed_size)
+        elif node in highlighted_nodes:
+            node_colors.append(highlight_color)
+            node_sizes.append(highlight_size)
         else:
-            node_color.append('k')
+            node_colors.append(other_color)
+            node_sizes.append(other_size)
             node_size.append(20)
 #    node_size = [300 if v in S else 20 for v in g.nodes()]
     nx.draw(g, node_color = node_color, node_size=node_size)
@@ -321,16 +381,29 @@ def project_uniform_matroid_boundary(x, k, c=1):
     raise Exception('projection did not terminate')
 
 def project_cvx(x, k):
-    '''
-    Exact Euclidean projection onto the boundary of the k uniform matroid polytope.
-    '''
-    from cvxpy import Variable, Minimize, sum_squares, Problem
-    import numpy as np
+    """Exact Euclidean projection onto the boundary of the k uniform matroid polytope.
+    
+    Args:
+        x: Vector to project
+        k: Target sum
+        
+    Returns:
+        Projected vector
+        
+    Raises:
+        ImportError: If cvxpy is not installed
+    """
+    if not HAS_CVXPY:
+        raise ImportError(
+            "cvxpy is required for project_cvx(). "
+            "Install with: pip install cvxpy"
+        )
+        
     n = len(x)
-    p = Variable(n, 1)
-    objective = Minimize(sum_squares(p - x))
-    constraints = [sum(p) == k, p >= 0, p <= 1]
-    prob = Problem(objective, constraints)
+    p = cp.Variable(n, 1)
+    objective = cp.Minimize(cp.sum_squares(p - x))
+    constraints = [cp.sum(p) == k, p >= 0, p <= 1]
+    prob = cp.Problem(objective, constraints)
     prob.solve()
     return np.reshape(np.array(p.value), x.shape)
 

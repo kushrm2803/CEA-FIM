@@ -1,21 +1,43 @@
-import numpy as np
+"""
+Core algorithms for influence maximization and optimization.
+
+This module contains implementations of various algorithms used in the
+fair influence maximization process, including indicator functions,
+Frank-Wolfe variants, and other optimization methods.
+"""
+
+try:
+    import numpy as np
+except ImportError:
+    raise ImportError("numpy is required. Install with: pip install numpy")
+
+from typing import Set, List, Callable, Dict, Any
 from utils import greedy
 
-def indicator(S, n):
-    
-    '''
-    Input:
-        S: a set of node indices (for example {1, 3, 5})
-        n: total number of nodes in the graph
+# Constants
+EPSILON = 1e-6  # Small value for numerical comparisons
+MAX_ITER = 1000  # Maximum iterations for optimization
+DEFAULT_BATCH_SIZE = 200  # Default batch size for gradient estimation
 
-    Output:
-        A binary vector of length n, where:
-        Position i is 1 if node i is in the set S
-        Position i is 0 otherwise
-        for example [0, 1, 0, 1, 0, 1]
-    '''
-    x = np.zeros(n)
-    x[list(S)] = 1
+def indicator(nodes: Set[int], size: int) -> np.ndarray:
+    """Convert a set of nodes to a binary indicator vector.
+    
+    Args:
+        nodes: Set of node indices (e.g., {1, 3, 5})
+        size: Total number of nodes in the graph
+        
+    Returns:
+        Binary vector where position i is 1 if node i is in the set,
+        0 otherwise. For example: [0, 1, 0, 1, 0, 1]
+        
+    Raises:
+        ValueError: If any node index >= size
+    """
+    if any(i >= size for i in nodes):
+        raise ValueError(f"Node index >= graph size {size}")
+        
+    x = np.zeros(size)
+    x[list(nodes)] = 1
     return x
 
 def multi_to_set(f, n):

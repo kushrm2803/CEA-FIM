@@ -1,23 +1,71 @@
-import numpy as np
-import random
-from numba import jit
-import networkx as nx
+"""
+Independent Cascade Model (ICM) implementation.
 
+This module implements the Independent Cascade Model for influence propagation
+in social networks, including live-edge graph sampling and probability calculations.
+"""
 
-def sample_live_icm(g, num_graphs):
-    '''
-    Returns num_graphs live edge graphs sampled from the ICM on g. Assumes that
-    each edge has a propagation probability accessible via g[u][v]['p'].
-    '''
+try:
+    import numpy as np
+except ImportError:
+    raise ImportError("numpy is required. Install with: pip install numpy")
+
+try:
     import networkx as nx
+except ImportError:
+    raise ImportError("networkx is required. Install with: pip install networkx")
+
+try:
+    from numba import jit
+except ImportError:
+    raise ImportError("numba is required. Install with: pip install numba")
+
+import random
+from typing import List, Dict, Set, Tuple
+
+# Constants
+DEFAULT_EDGE_PROB = 0.1  # Default edge probability if not specified
+NUM_MC_SAMPLES = 1000  # Default number of Monte Carlo samples
+
+def sample_live_icm(graph: nx.Graph, num_samples: int) -> List[nx.Graph]:
+    """Sample live-edge graphs under the Independent Cascade Model.
+    
+    Generate num_samples different realizations of the influence graph by sampling
+    edges according to their propagation probabilities. Each edge (u,v) in the
+    original graph should have a propagation probability accessible via 
+    graph[u][v]['p'].
+    
+    Args:
+        graph: Original graph with edge probabilities
+        num_samples: Number of sample graphs to generate
+        
+    Returns:
+        List of sampled live-edge graphs
+        
+    Raises:
+        KeyError: If any edge missing probability 'p' attribute
+    """
     live_edge_graphs = []
-    for _ in range(num_graphs):
-        h = nx.Graph()
-        h.add_nodes_from(g.nodes())
-        for u,v in g.edges():
-            if random.random() < g[u][v]['p']:
-                h.add_edge(u,v)
-        live_edge_graphs.append(h)
+    
+    # Sample num_samples different graphs
+    for _ in range(num_samples):
+        # Create new empty graph with same nodes
+        sample = nx.Graph()
+        sample.add_nodes_from(graph.nodes())
+        
+        # Sample each edge independently
+        for u, v in graph.edges():
+            try:
+                prob = graph[u][v]['p']
+            except KeyError:
+                raise KeyError(f"Edge ({u},{v}) missing probability attribute 'p'")
+                
+            if random.random() < prob:
+                sample.add_edge(u, v)
+                
+        live_edge_graphs.append(sample)
+        
+    return live_edge_graphs
     return live_edge_graphs
 
 def f_all_influmax_multlinear(x, Gs, Ps, ws):

@@ -1,6 +1,14 @@
+"""
+Community-Aware Evolution Algorithm for Fair Influence Maximization (CEA-FIM).
+
+This module implements an evolutionary algorithm for fair influence maximization
+in social networks, considering community structure and node attributes.
+"""
+
 import networkx as nx
 import numpy as np
 import pickle
+from typing import List, Set, Dict, Callable, Optional, Any, Tuple
 from utils import greedy
 from icm import sample_live_icm, make_multilinear_objective_samples_group, make_multilinear_gradient_group
 from algorithms import algo, maxmin_algo, make_normalized, indicator
@@ -14,32 +22,41 @@ from time import strftime, localtime
 import decimal
 from decimal import Decimal
 
+# Configuration constants
+NUM_MC_SIMULATIONS = 1000  # Number of Monte-Carlo simulations for ICM
+DEFAULT_POP_SIZE = 10      # Default population size
+DEFAULT_MUTATION_RATE = 0.1  # Default mutation rate
+DEFAULT_CROSSOVER_RATE = 0.6  # Default crossover rate
+DEFAULT_MAX_GENERATIONS = 150  # Default number of generations
 
-# Individual = one seed set (e.g., [3, 8, 15, 42, 50])
-# Gene = one node in that seed set
-# Population = collection of several such seed sets (solutions)
-
-def multi_to_set(f, n = None):
-    '''
-    Input:	f (function that expects a 0/1 vector)
-    Output:	A new function that expects a set of nodes
-    Inside:	It converts the set into a 0/1 vector using indicator(S, n) and calls the original f
-    Purpose: A wrapper function to pass 0/1 vector to a function that expects a set
-    '''
-    if n == None:
+def multi_to_set(f: Callable, n: Optional[int] = None) -> Callable[[Set[int]], Any]:
+    """Convert a function expecting a 0/1 vector to one expecting a set of nodes.
+    
+    Args:
+        f: Function that expects a 0/1 vector
+        n: Length of indicator vector (optional)
+        
+    Returns:
+        A new function that takes a set and converts it to indicator vector
+    """
+    if n is None:
         n = len(g)
-    def f_set(S):
+    def f_set(S: Set[int]) -> Any:
         return f(indicator(S, n))
     return f_set
 
-def valoracle_to_single(f, i):
-    '''
-    Input:	f (the multi-output function), i (index of desired output)
-    Output:	A new function that gives i-th value of f(x,1000)
-    Purpose: To create one oracle per attribute group for fairness-based evaluation
-    '''
-    def f_single(x):
-        return f(x, 1000)[i] #1000 is the number of Monte-Carlo simulations for ICM
+def valoracle_to_single(f: Callable, i: int) -> Callable[[np.ndarray], float]:
+    """Create a single-output value oracle from multi-output function.
+    
+    Args:
+        f: Multi-output oracle function
+        i: Index of desired output
+        
+    Returns:
+        Single-output oracle function
+    """
+    def f_single(x: np.ndarray) -> float:
+        return f(x, NUM_MC_SIMULATIONS)[i]
     return f_single
 
 # Create the first random generation of population

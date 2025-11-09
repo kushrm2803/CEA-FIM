@@ -1,0 +1,7 @@
+numpy>=1.19.0
+networkx>=2.5
+numba>=0.50.0
+python-louvain>=0.15
+scipy>=1.5.0
+gurobipy>=9.1.0
+cvxpy>=1.1.0
