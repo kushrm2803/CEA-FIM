@@ -57,3 +57,12 @@ Contains the baseline implementation from the original paper.
 ## Reference
 Our enhancements are based on the algorithm presented in:
 [Community-based Evolutionary Algorithm for Fair Influence Maximization](https://ieeexplore.ieee.org/abstract/document/10542566)
+
+## Team Members
+
+| Name                | Roll Number         | GitHub ID           |
+| :------------------ | :------------------ | :------------------ |
+| Kush Mahajan         | 2022CSB1089       | @kushrm2803      |
+| Swapnil Pandey   | 2022CSB1133] | @SwapnilPandey2210     |
+| Ayush Patel   | 2022CSB1101 | @Gujju-atWork      |
+| Nishant Patil   | 2022CSB1097 | @Nishant984      |
