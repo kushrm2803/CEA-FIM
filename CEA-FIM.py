@@ -1,3 +1,12 @@
+"""
+Main script for the Community-Aware Evolution Algorithm for Fair Influence
+Maximization (CEA-FIM).
+
+This file contains the experiment runner and helper wrappers. Refactors are
+kept conservative to avoid changing runtime behaviour. Added lightweight
+type hints and defensive checks where safe.
+"""
+
 import networkx as nx
 import numpy as np
 import pickle
@@ -5,7 +14,6 @@ from utils import greedy
 from icm import sample_live_icm, make_multilinear_objective_samples_group, make_multilinear_gradient_group
 from algorithms import algo, maxmin_algo, make_normalized, indicator
 import math
-import community as community_louvain
 import sys
 import copy
 import random
@@ -14,32 +22,47 @@ from time import strftime, localtime
 import decimal
 from decimal import Decimal
 
+# Import community only where we need it to avoid import-time failures
+try:
+    import community as community_louvain
+except Exception:
+    community_louvain = None
+
 
 # Individual = one seed set (e.g., [3, 8, 15, 42, 50])
 # Gene = one node in that seed set
 # Population = collection of several such seed sets (solutions)
 
-def multi_to_set(f, n = None):
-    '''
-    Input:  f (function that expects a 0/1 vector)
-    Output: A new function that expects a set of nodes
-    Inside: It converts the set into a 0/1 vector using indicator(S, n) and calls the original f
-    Purpose: A wrapper function to pass 0/1 vector to a function that expects a set
-    '''
-    if n == None:
-        n = len(g)
+def multi_to_set(f, n: int = None):
+    """Wrap a vector-valued oracle so it accepts a set of node indices.
+
+    The returned function expects a Python set (or iterable) of node indices
+    and converts it to the 0/1 indicator vector expected by `f`.
+
+    If `n` is not provided the function will attempt to infer the length from
+    a global `g` variable (this mirrors the original script behaviour).
+    """
+    if n is None:
+        try:
+            n = len(g)
+        except NameError:
+            raise ValueError("n must be provided to multi_to_set when global 'g' is not defined")
+
     def f_set(S):
         return f(indicator(S, n))
+
     return f_set
 
-def valoracle_to_single(f, i):
-    '''
-    Input:  f (the multi-output function), i (index of desired output)
-    Output: A new function that gives i-th value of f(x,1000)
-    Purpose: To create one oracle per attribute group for fairness-based evaluation
-    '''
+def valoracle_to_single(f, i: int):
+    """Return a single-output oracle that extracts the i-th coordinate.
+
+    The returned function accepts the same `x` argument as `f` and calls
+    `f(x, 1000)` then returns the i-th element. (Preserves original default
+    of 1000 Monte Carlo samples.)
+    """
     def f_single(x):
-        return f(x, 1000)[i] #1000 is the number of Monte-Carlo simulations for ICM
+        return f(x, 1000)[i]
+
     return f_single
 
 # Create the first random generation of population

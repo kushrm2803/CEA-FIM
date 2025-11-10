@@ -1,7 +1,16 @@
+"""
+Algorithms used by CEA-FIM.
+
+This module contains helper routines (indicator conversions), Frank-Wolfe
+variants, and small utilities used by the main script. Edits are kept
+conservative to preserve existing behaviour.
+"""
+
 import numpy as np
+from typing import Set, Callable, List, Any
 from utils import greedy
 
-def indicator(S, n):
+def indicator(S: Set[int], n: int) -> np.ndarray:
     
     '''
     Input:
@@ -18,7 +27,7 @@ def indicator(S, n):
     x[list(S)] = 1
     return x
 
-def multi_to_set(f, n):
+def multi_to_set(f: Callable, n: int) -> Callable:
     '''
     Takes as input a function defined on indicator vectors of sets, and returns
     a version of the function which directly accepts sets
@@ -27,14 +36,14 @@ def multi_to_set(f, n):
         return f(indicator(S, n))
     return f_set
 
-def make_weighted(f, weights, *args):
-    def weighted(x):
-        return np.dot(weights, f(x, *args))
+def make_weighted(f: Callable, weights: np.ndarray, *args) -> Callable:
+    def weighted(x: np.ndarray) -> float:
+        return float(np.dot(weights, f(x, *args)))
     return weighted
 
-def make_normalized(f, targets):
-    def normalized(x, *args):
-        return f(x, *args)@np.diag(1./targets)
+def make_normalized(f: Callable, targets: np.ndarray) -> Callable:
+    def normalized(x: np.ndarray, *args) -> np.ndarray:
+        return f(x, *args) @ np.diag(1.0 / targets)
     return normalized
 
 def make_contracted_function(f, S):
@@ -81,18 +90,28 @@ def mirror_sp(x, grad_oracle, k, group_indicator, group_targets, num_iter, step_
         y = y/y.sum()
     return v
 
-def lp_minmax(x, grad_oracle, k, group_indicator, group_targets):
-    import gurobipy as gp
+def lp_minmax(x: np.ndarray, grad_oracle: Callable, k: int, group_indicator: np.ndarray, group_targets: np.ndarray) -> np.ndarray:
+    """Solve the inner max-min LP using Gurobi.
+
+    This function uses gurobipy if available. If gurobi is not installed
+    a clear ImportError will be raised to avoid confusing import-time
+    failures elsewhere.
+    """
+    try:
+        import gurobipy as gp
+    except ImportError:
+        raise ImportError("gurobipy is required for lp_minmax(). Install Gurobi and gurobipy to use this solver.")
+
     m = gp.Model()
-    m.setParam( 'OutputFlag', False )
-    v = m.addVars(range(len(x)), lb = 0, ub = 1)
+    m.setParam('OutputFlag', False)
+    v = m.addVars(range(len(x)), lb=0, ub=1)
     obj = m.addVar()
     m.update()
     m.addConstr(gp.quicksum(v) <= k)
     g = grad_oracle(x, 5000)
     for i in range(len(group_targets)):
         if group_targets[i] > 0:
-            m.addConstr(obj <= gp.quicksum(v[j]*g[j, i] for j in range(len(v)))/group_targets[i])
+            m.addConstr(obj <= gp.quicksum(v[j] * g[j, i] for j in range(len(v))) / group_targets[i])
     m.setObjective(obj, gp.GRB.MAXIMIZE)
     m.optimize()
     return np.array([v[i].x for i in range(len(v))])

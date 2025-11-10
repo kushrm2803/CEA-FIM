@@ -1,26 +1,27 @@
-
 def visualize_set(g, S, all_nodes):
     '''
-    Draws a visualization of g, with the nodes in S much bigger/colored and the
-    nodes in all_nodes drawn in a medium size. Helpful to visualize seed sets/
-    conduct sanity checks.
+    Draw a visualization of `g` highlighting nodes in `S` and `all_nodes`.
+
+    Keeps the original behaviour: seed nodes in `S` are large/blue, nodes in
+    `all_nodes` are medium/yellow, others are small/black.
     '''
     import networkx as nx
-    node_color = []
-    node_size = []
-#    g = nx.subgraph(g, all_nodes)
+
+    node_colors = []
+    node_sizes = []
+
     for v in g.nodes():
         if v in S:
-            node_color.append('b')
-            node_size.append(300)
+            node_colors.append('b')
+            node_sizes.append(300)
         elif v in all_nodes:
-            node_color.append('y')
-            node_size.append(100)
+            node_colors.append('y')
+            node_sizes.append(100)
         else:
-            node_color.append('k')
-            node_size.append(20)
-#    node_size = [300 if v in S else 20 for v in g.nodes()]
-    nx.draw(g, node_color = node_color, node_size=node_size)
+            node_colors.append('k')
+            node_sizes.append(20)
+
+    nx.draw(g, node_color=node_colors, node_size=node_sizes)
 
 def visualize_communities(g, part, S = None):
     '''
@@ -44,18 +45,20 @@ def visualize_communities(g, part, S = None):
     pos = {}
     centers = [[0, 0], [0, 1.25], [1.25, 0], [1.25, 1.25]]
     for v in g.nodes():
-        pos[v] = [centers[part[v]][0] + random.random() - 0.5, centers[part[v]][1] + random.random() - 0.5]
-    if not S == None:
-        node_colors = []
-        node_sizes = []
-        for v in g.nodes():
-            if v in S:
-                node_colors.append('red')
-                node_sizes.append(300)
-            else:
-                node_colors.append('blue')
-                node_sizes.append(50)
-            
+        pos[v] = [centers[part[v]][0] + random.random() - 0.5,
+                  centers[part[v]][1] + random.random() - 0.5]
+
+    # Prepare node colors/sizes whether or not S is provided
+    node_colors = []
+    node_sizes = []
+    for v in g.nodes():
+        if S is not None and v in S:
+            node_colors.append('red')
+            node_sizes.append(300)
+        else:
+            node_colors.append('blue')
+            node_sizes.append(50)
+
     nx.draw(g, node_color=node_colors, node_size=node_sizes, pos=pos)
     
 #def load_g(netname):
@@ -177,17 +180,21 @@ def greedy_cover(items, c, f):
     S  = set()
     #greedy selection of K nodes
     while starting_objective < c - 0.0001:
+        if not upper_bounds:
+            return -1
         val, u = heapq.heappop(upper_bounds)
-        new_total = f(S.union(set([u])))
-        if len(upper_bounds) == 0:
+        new_total = f(S.union({u}))
+
+        # If this was the last candidate, decide immediately
+        if not upper_bounds:
             if new_total >= c:
-                S = S.add(u)
+                S.add(u)
                 return S
             else:
                 return -1
-            
-        new_val =  new_total - starting_objective
-        #lazy evaluation of marginal gains: just check if beats the next highest upper bound
+
+        new_val = new_total - starting_objective
+        # lazy evaluation of marginal gains
         if new_val >= -upper_bounds[0][0] - 0.1:
             S.add(u)
             starting_objective = new_total
@@ -200,20 +207,23 @@ def saturate(items, budget, fs, epsilon):
     SATURATE algorithm of Krause et al 2008 for robust submodular optimization.
     '''
     from math import ceil
+    # initial bounds
     cmax = fs[0](set(items))
     cmin = 0
-    c = (cmax + cmin)/2
+    c = (cmax + cmin) / 2
     S_best = None
+
     while cmax - cmin > epsilon:
-        f_truncate = lambda S: (1./len(fs))*sum(min((f(S), c)) for f in fs)
+        # truncate each function at level c and average
+        f_truncate = lambda S: (1.0 / len(fs)) * sum(min((f_i(S), c)) for f_i in fs)
         S = greedy_cover(items, c, f_truncate)
-        if S == -1 or len(S) > budget:
+        if S == -1 or (hasattr(S, '__len__') and len(S) > budget):
             cmax = c
-            c = (c + cmin)/2
+            c = (c + cmin) / 2
             print('failed', cmax, cmin, c)
         else:
             cmin = c
-            c = (c + cmax)/2
+            c = (c + cmax) / 2
             S_best = S
             print('succeed', cmax, cmin, c)
 
@@ -323,14 +333,19 @@ def project_uniform_matroid_boundary(x, k, c=1):
 def project_cvx(x, k):
     '''
     Exact Euclidean projection onto the boundary of the k uniform matroid polytope.
+    Uses `cvxpy` if available; raises ImportError if not installed.
     '''
-    from cvxpy import Variable, Minimize, sum_squares, Problem
+    try:
+        import cvxpy as cp
+    except ImportError:
+        raise ImportError("cvxpy is required for project_cvx(). Install with: pip install cvxpy")
+
     import numpy as np
     n = len(x)
-    p = Variable(n, 1)
-    objective = Minimize(sum_squares(p - x))
-    constraints = [sum(p) == k, p >= 0, p <= 1]
-    prob = Problem(objective, constraints)
+    p = cp.Variable(n, 1)
+    objective = cp.Minimize(cp.sum_squares(p - x))
+    constraints = [cp.sum(p) == k, p >= 0, p <= 1]
+    prob = cp.Problem(objective, constraints)
     prob.solve()
     return np.reshape(np.array(p.value), x.shape)
 

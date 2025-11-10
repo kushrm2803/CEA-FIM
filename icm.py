@@ -1,15 +1,34 @@
+"""
+Independent Cascade Model utilities.
+
+Small, conservative refactors: make the numba `jit` decorator optional (if
+numba is not installed the code will still run), add light typing and
+documentation.
+"""
+
 import numpy as np
 import random
-from numba import jit
 import networkx as nx
+from typing import List, Tuple, Callable
+
+# Make numba.jit optional to avoid hard dependency at import time
+try:
+    from numba import jit
+except Exception:
+    # fallback: no-op decorator
+    def jit(func=None, **kwargs):
+        if func is None:
+            def wrapper(f):
+                return f
+            return wrapper
+        return func
 
 
-def sample_live_icm(g, num_graphs):
+def sample_live_icm(g: nx.Graph, num_graphs: int) -> List[nx.Graph]:
     '''
     Returns num_graphs live edge graphs sampled from the ICM on g. Assumes that
     each edge has a propagation probability accessible via g[u][v]['p'].
     '''
-    import networkx as nx
     live_edge_graphs = []
     for _ in range(num_graphs):
         h = nx.Graph()
